@@ -18,7 +18,9 @@
 
 #include "lck.h"
 
-#if defined(__AVR__) || defined(ARDUINO_ARCH_ESP8266)
+#if defined(__AVR__) || defined(ARDUINO_ARCH_ESP8266) || \
+    defined(ARDUINO_ARCH_ESP32) || defined(SUPLA_DEVICE)
+// TODO(klew): add multithread support for SUPLA_DEVICE
 #define __SINGLE_THREAD
 #else
 
@@ -29,7 +31,8 @@
 #include <time.h>
 #endif /*_WIN32*/
 
-#endif /*defined(__AVR__) || defined(ARDUINO_ARCH_ESP8266)*/
+#endif  // defined(__AVR__) || defined(ARDUINO_ARCH_ESP8266)
+        // || defined(ARDUINO_ARCH_ESP32)
 
 #include <stdlib.h>
 
@@ -46,7 +49,7 @@ typedef struct {
 } TLckData;
 #endif
 
-void *lck_init(void) {
+void *LCK_ICACHE_FLASH lck_init(void) {
 #ifdef __SINGLE_THREAD
   return NULL;
 #else
@@ -71,45 +74,50 @@ void *lck_init(void) {
 }
 
 void lck_lock(void *lck) {
+  (void)(lck);
 #ifndef __SINGLE_THREAD
   if (lck != NULL) {
 #ifdef _WIN32
-    EnterCriticalSection(&((TLckData *)lck)->critSec); // NOLINT
+    EnterCriticalSection(&((TLckData *)lck)->critSec);  // NOLINT
 #else
-    pthread_mutex_lock(&((TLckData *)lck)->mutex); // NOLINT
+    pthread_mutex_lock(&((TLckData *)lck)->mutex);     // NOLINT
 #endif /*_WIN32*/
   }
 
 #endif /*__SINGLE_THREAD*/
 }
 
-void lck_unlock(void *lck) {
+void LCK_ICACHE_FLASH lck_unlock(void *lck) {
+  (void)(lck);
 #ifndef __SINGLE_THREAD
   if (lck != NULL) {
 #ifdef _WIN32
-    LeaveCriticalSection(&((TLckData *)lck)->critSec); // NOLINT
+    LeaveCriticalSection(&((TLckData *)lck)->critSec);  // NOLINT
 #else
-    pthread_mutex_unlock(&((TLckData *)lck)->mutex); // NOLINT
+    pthread_mutex_unlock(&((TLckData *)lck)->mutex);   // NOLINT
 #endif /*_WIN32*/
   }
 
 #endif /*__SINGLE_THREAD*/
 }
 
-int lck_unlock_r(void *lck, int result) {
+int LCK_ICACHE_FLASH lck_unlock_r(void *lck, int result) {
+  (void)(lck);
 #ifndef __SINGLE_THREAD
   lck_unlock(lck);
 #endif /*__SINGLE_THREAD*/
   return result;
 }
 
-void lck_free(void *lck) {
+void LCK_ICACHE_FLASH lck_free(void *lck) {
+  (void)(lck);
+
 #ifndef __SINGLE_THREAD
   if (lck != NULL) {
 #ifdef _WIN32
-    DeleteCriticalSection(&((TLckData *)lck)->critSec); // NOLINT
+    DeleteCriticalSection(&((TLckData *)lck)->critSec);  // NOLINT
 #else
-    pthread_mutex_destroy(&((TLckData *)lck)->mutex); // NOLINT
+    pthread_mutex_destroy(&((TLckData *)lck)->mutex);  // NOLINT
 #endif /*_WIN32*/
     free(lck);
   }

@@ -23,6 +23,10 @@
 
 #ifdef ELECTRICITY_METER_COUNT
 
+#ifndef ELECTRICITY_METER_CHANNEL_OFFSET
+#define ELECTRICITY_METER_CHANNEL_OFFSET 0
+#endif /*ELECTRICITY_METER_CHANNEL_OFFSET*/
+
 void ICACHE_FLASH_ATTR supla_esp_em_init(void);
 void ICACHE_FLASH_ATTR supla_esp_em_start(void);
 void ICACHE_FLASH_ATTR supla_esp_em_stop(void);
@@ -31,7 +35,9 @@ void ICACHE_FLASH_ATTR supla_esp_em_get_value(
     unsigned char channel_number, char value[SUPLA_CHANNELVALUE_SIZE]);
 void ICACHE_FLASH_ATTR supla_esp_em_send_base_value_enabled(char enabled);
 void ICACHE_FLASH_ATTR supla_esp_em_set_measurement_frequency(int freq);
-
+TElectricityMeter_ExtendedValue_V2* ICACHE_FLASH_ATTR
+supla_esp_em_get_last_ev_ptr(uint8 channel_number);
+_supla_int_t supla_esp_board_em_get_all_possible_measured_values(void);
 #endif /*ELECTRICITY_METER_COUNT*/
 
 #endif

@@ -78,8 +78,8 @@ static update_params *update = NULL;
 static char update_step;
 static unsigned int update_checking_start_time = 0;
 
-void supla_esp_update_init(void) {
-	
+void ICACHE_FLASH_ATTR supla_esp_update_init(void) {
+
 	update = NULL;
 
 	if ( supla_esp_cfg.FirmwareUpdate == 1 ) {
@@ -122,7 +122,7 @@ supla_esp_update_reboot(char uf_finish) {
 
 void ICACHE_FLASH_ATTR
 supla_esp_check_updates(void *srpc) {
-	
+
 	if ( update_step == FUPDT_STEP_CHECK ) {
 		update_step = FUPDT_STEP_CHECKING;
 		update_checking_start_time = system_get_time();
@@ -137,6 +137,8 @@ supla_esp_check_updates(void *srpc) {
 		params.Platform = SUPLA_PLATFORM_ESP8266;
 		params.Param1 = system_get_flash_size_map();
 		params.Param2 = system_upgrade_userbin_check();
+		params.Param3 = UPDATE_PARAM3;
+		params.Param4 = UPDATE_PARAM4;
 
 		//supla_log(LOG_DEBUG, "get_firmware_update_url");
 		srpc_sd_async_get_firmware_update_url(srpc, &params);
@@ -373,9 +375,6 @@ supla_esp_update_recv_cb (void *arg, char *pdata, unsigned short len) {
 									update->downloaded_data_size = 0;
 
 									switch(system_get_flash_size_map()) {
-										case FLASH_SIZE_4M_MAP_256_256:
-										case FLASH_SIZE_2M:
-											break;
 										case FLASH_SIZE_8M_MAP_512_512:
 										case FLASH_SIZE_16M_MAP_512_512:
 										case FLASH_SIZE_32M_MAP_512_512:
@@ -391,6 +390,8 @@ supla_esp_update_recv_cb (void *arg, char *pdata, unsigned short len) {
 											if ( update->expected_file_size <= 1024*1004 )
 												update_step = FUPDT_STEP_DOWNLOADING;
 
+											break;
+										default:
 											break;
 									}
 								}
@@ -516,9 +517,9 @@ supla_esp_update_delay_timer_func(void *timer_arg) {
 
 void ICACHE_FLASH_ATTR
 supla_esp_update_url_result(TSD_FirmwareUpdate_UrlResult *url_result) {
-	
+
 	if ( update_step != FUPDT_STEP_CHECKING ) return;
-	
+
 	//supla_log(LOG_DEBUG, "Firmware -- exists = %i, host = %s, port = %i, path = %s", url_result->exists, url_result->url.host, url_result->url.port, url_result->url.path);
 
 	if ( url_result->exists
@@ -533,15 +534,6 @@ supla_esp_update_url_result(TSD_FirmwareUpdate_UrlResult *url_result) {
 		int ubin = system_upgrade_userbin_check();
 
 		switch(system_get_flash_size_map()) {
-		    case FLASH_SIZE_4M_MAP_256_256:
-		    case FLASH_SIZE_2M:
-
-		        // UPDATE NOT SUPPORTED
-
-		        free(update);
-		        update = NULL;
-		        return;
-
 			case FLASH_SIZE_8M_MAP_512_512:
 			case FLASH_SIZE_16M_MAP_512_512:
 			case FLASH_SIZE_32M_MAP_512_512:
@@ -551,6 +543,12 @@ supla_esp_update_url_result(TSD_FirmwareUpdate_UrlResult *url_result) {
 			case FLASH_SIZE_32M_MAP_1024_1024:
 				update->flash_addr = ubin == UPGRADE_FW_BIN1 ? 0x101000 : 0x01000;
 				break;
+			default:
+		        // UPDATE NOT SUPPORTED
+
+		        free(update);
+		        update = NULL;
+		        return;
 		}
 
 		update->flash_awo = update->flash_addr;
@@ -567,7 +565,7 @@ supla_esp_update_url_result(TSD_FirmwareUpdate_UrlResult *url_result) {
 		os_timer_arm (&update->delay_timer, 2000, false);
 
 	}
-	
+
 }
 
 char ICACHE_FLASH_ATTR
@@ -580,5 +578,6 @@ supla_esp_update_started(void) {
 
 	return 0;
 }
-
+#else
+char ICACHE_FLASH_ATTR supla_esp_update_started(void) { return 0; }
 #endif

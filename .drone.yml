@@ -1,0 +1,45 @@
+kind: pipeline
+name: default
+
+steps:
+- name: tests_compilation
+  image: rikorose/gcc-cmake
+  commands:
+  - cd test/build
+  - cmake ..
+  - make -j8
+
+- name: run_tests
+  image: rikorose/gcc-cmake
+  commands:
+  - cd test/build
+  - ./supla_common_test --gtest_shuffle --gtest_repeat=20
+  depends_on:
+  - tests_compilation
+
+# All targets compilation check
+- name: boards_compilation_check
+  image: devel/esp8266
+  pull: never
+  commands:
+  - mkdir -p /CProjects
+  - ln -s /drone/src /CProjects/supla-espressif-esp
+  - ./test/check_compilation_of_all_targets.sh
+
+- name: rocket
+  image: mike1pol/drone-rocket
+  depends_on: [run_tests, boards_compilation_check]
+  settings:
+    url:
+      from_secret: rocket_url
+    user_id:
+      from_secret: rocket_user_id
+    token:
+      from_secret: rocket_token
+    channel: github
+    avatar_url: "https://miro.medium.com/max/256/0*AqO_2lNemh_Fl9Gm.png"
+  when:
+    status: [success, failure]
+    event:
+      exclude:
+        - pull_request

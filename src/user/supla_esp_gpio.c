@@ -17,6 +17,7 @@
  */
 
 #include <stdlib.h>
+#include <string.h>
 
 #include <ets_sys.h>
 #include <osapi.h>
@@ -30,6 +31,11 @@
 #include "supla_esp_cfg.h"
 #include "supla_esp_devconn.h"
 #include "supla_esp_cfgmode.h"
+#include "supla_esp_countdown_timer.h"
+#include "supla_esp_mqtt.h"
+#include "supla_update.h"
+#include "supla_esp_rs_fb.h"
+#include "supla_esp_input.h"
 
 #include "supla-dev/log.h"
 
@@ -39,403 +45,18 @@
 #define LED_GREEN  0x2
 #define LED_BLUE   0x4
 
-#define INPUT_MIN_CYCLE_COUNT   5
-#define INPUT_CYCLE_TIME        20
-
-#define CFG_BTN_PRESS_COUNT     10
-
-#define RS_STATE_STOP           0
-#define RS_STATE_DOWN           1
-#define RS_STATE_UP             2
-
-supla_input_cfg_t supla_input_cfg[INPUT_MAX_COUNT];
 supla_relay_cfg_t supla_relay_cfg[RELAY_MAX_COUNT];
-supla_roller_shutter_cfg_t supla_rs_cfg[RS_MAX_COUNT];
 
 unsigned int supla_esp_gpio_init_time = 0;
+bool silent_period = true;
 
 static char supla_last_state = STATE_UNKNOWN;
 static ETSTimer supla_gpio_timer1;
 static ETSTimer supla_gpio_timer2;
+static ETSTimer supla_motion_sensor_init_timer;
 unsigned char supla_esp_restart_on_cfg_press = 0;
 
-#ifdef _ROLLERSHUTTER_SUPPORT
-void
-supla_esp_gpio_rs_calibrate(supla_roller_shutter_cfg_t *rs_cfg, unsigned int full_time, unsigned int time, int pos) {
-
-	if ( ( *rs_cfg->position < 100 || *rs_cfg->position > 10100 )
-		 && full_time > 0 ) {
-
-		full_time *= 1.1; // 10% margin
-
-		if ( time >= full_time ) {
-			*rs_cfg->position = pos;
-			supla_esp_save_state(RS_SAVE_STATE_DELAY);
-		}
-	};
-
-}
-
-#define RS_DIRECTION_NONE   0
-#define RS_DIRECTION_UP     2
-#define RS_DIRECTION_DOWN   1
-
-void
-supla_esp_gpio_rs_set_relay_delayed(void *timer_arg) {
-
-	supla_esp_gpio_rs_set_relay((supla_roller_shutter_cfg_t*)timer_arg, ((supla_roller_shutter_cfg_t*)timer_arg)->delayed_trigger.value, 0, 0);
-
-}
-
-void
-supla_esp_gpio_rs_set_relay(supla_roller_shutter_cfg_t *rs_cfg, uint8 value, uint8 cancel_task, uint8 stop_delay) {
-
-	if ( rs_cfg == NULL ) {
-		return;
-	}
-
-	unsigned int t = system_get_time();
-	unsigned int delay_time = 0;
-	
-	if ( cancel_task ) {
-		supla_esp_gpio_rs_cancel_task(rs_cfg);
-	}
-	
-	
-	os_timer_disarm(&rs_cfg->delayed_trigger.timer);
-
-	if ( value == RS_RELAY_OFF )  {
-		
-		if ( RS_STOP_DELAY
-			 && stop_delay == 1
-			 && rs_cfg->start_time > 0
-			 && rs_cfg->stop_time == 0
-			 && t >= rs_cfg->start_time
-			 && (t - rs_cfg->start_time)/1000 < RS_STOP_DELAY) {
-
-			delay_time = RS_STOP_DELAY - (t - rs_cfg->start_time)/1000 + 1;
-		}
-		
-	} else {
-
-		supla_relay_cfg_t *rel = value == RS_RELAY_UP ? rs_cfg->down : rs_cfg->up;
-
-		if ( __supla_esp_gpio_relay_is_hi(rel) ) {
-
-			supla_esp_gpio_relay_hi(rel->gpio_id, 0, 0);
-			os_delay_us(10000);
-			
-			t = system_get_time();
-		}
-		
-
-		if ( RS_START_DELAY
-			 && rs_cfg->start_time == 0
-			 && rs_cfg->stop_time > 0
-			 && t >= rs_cfg->stop_time
-			 && (t - rs_cfg->stop_time)/1000 < RS_START_DELAY) {
-
-			delay_time = RS_START_DELAY - (t - rs_cfg->stop_time)/1000 + 1;
-		}
-		
-	}
-	
-	//supla_log(LOG_DEBUG, "VALUE: %i", value);
-	
-	if ( delay_time > 100 ) {
-		
-		rs_cfg->delayed_trigger.value = value;
-		
-		//supla_log(LOG_DEBUG, "Delay: %i", delay_time);
-		
-		os_timer_setfn(&rs_cfg->delayed_trigger.timer, supla_esp_gpio_rs_set_relay_delayed, rs_cfg);
-		os_timer_arm(&rs_cfg->delayed_trigger.timer, delay_time, 0);
-		
-		return;
-	}
-	
-	if (  value == RS_RELAY_UP ) {
-		supla_esp_gpio_relay_hi(rs_cfg->up->gpio_id, 1, 0);
-	} else if ( value == RS_RELAY_DOWN ) {
-		supla_esp_gpio_relay_hi(rs_cfg->down->gpio_id, 1, 0);
-	} else {
-		supla_esp_gpio_relay_hi(rs_cfg->up->gpio_id, 0, 0);
-		supla_esp_gpio_relay_hi(rs_cfg->down->gpio_id, 0, 0);
-	}
-	
-}
-
-uint8 
-supla_esp_gpio_rs_get_value(supla_roller_shutter_cfg_t *rs_cfg) {
-	
-	if ( rs_cfg != NULL ) {
-		
-		if ( 1 == __supla_esp_gpio_relay_is_hi(rs_cfg->up) ) {
-			return RS_RELAY_UP;
-		} else if ( 1 == __supla_esp_gpio_relay_is_hi(rs_cfg->down) ) {
-			return RS_RELAY_DOWN;
-		}
-		
-	}
-
-	
-	return RS_RELAY_OFF;
-}
-
-void
-supla_esp_gpio_rs_move_position(supla_roller_shutter_cfg_t *rs_cfg, unsigned int *full_time, unsigned int *time, uint8 up) {
-
-
-	if ( (*rs_cfg->position) < 100
-		 || (*rs_cfg->position) > 10100
-		 || (*full_time) == 0 ) return;
-
-	int last_pos = *rs_cfg->position;
-
-	int p = ((*time) * 100.00 / (*full_time) * 100);
-
-	unsigned int x = p * (*full_time) / 10000;
-
-
-	if ( p > 0 ) {
-
-		//supla_log(LOG_DEBUG, "p=%i, x=%i, last_pos=%i, full_time=%i, time=%i",p,x,last_pos,*full_time,*time);
-
-		if ( up == 1 ) {
-
-			if ( (*rs_cfg->position) - p <= 100 )
-				(*rs_cfg->position) = 100;
-			else
-				(*rs_cfg->position) -= p;
-
-		} else {
-
-			if ( (*rs_cfg->position) + p >= 10100 )
-				(*rs_cfg->position) = 10100;
-			else
-				(*rs_cfg->position) += p;
-
-		}
-
-		if ( last_pos != *rs_cfg->position ) {
-			supla_esp_save_state(RS_SAVE_STATE_DELAY);
-		}
-
-
-	}
-
-	if ( ((*rs_cfg->position) == 100 && up == 1) || ((*rs_cfg->position) == 10100 && up == 0) ) {
-
-		if ( (*time) >= (*full_time) * 1.1 ) {
-
-			supla_esp_gpio_rs_set_relay(rs_cfg, RS_RELAY_OFF, 0, 0);
-			//supla_log(LOG_DEBUG, "Timeout full_time + 10%");
-
-		}
-
-		return;
-	}
-
-
-	if ( x <= (*time) )
-		(*time) -= x;
-	else  // if some error
-		(*time) = 0;
-
-}
-
-
-uint8
-supla_esp_gpio_rs_time_margin(supla_roller_shutter_cfg_t *rs_cfg, unsigned int *full_time, unsigned int time, uint8 m) {
-
-	return  ((*full_time) > 0 && ( time * 100 / (*full_time) ) < m ) ? 1 : 0;
-
-}
-
-void
-supla_esp_gpio_rs_task_processing(supla_roller_shutter_cfg_t *rs_cfg) {
-
-	if ( rs_cfg->task.active == 0 )
-		return;
-
-	if ( *rs_cfg->position < 100
-	     || *rs_cfg->position > 10100 ) {
-
-		if ( 0 == __supla_esp_gpio_relay_is_hi(rs_cfg->down)
-			 && 0 == __supla_esp_gpio_relay_is_hi(rs_cfg->up)
-			 && *rs_cfg->full_opening_time > 0
-			 && *rs_cfg->full_closing_time > 0) {
-
-			if ( rs_cfg->task.percent < 50 )
-				supla_esp_gpio_rs_set_relay(rs_cfg, RS_RELAY_UP, 0, 0);
-			else
-				supla_esp_gpio_rs_set_relay(rs_cfg, RS_RELAY_DOWN, 0, 0);
-
-		}
-
-		return;
-	}
-
-	uint8 percent = ((*rs_cfg->position)-100)/100;
-
-
-	if ( rs_cfg->task.direction == RS_DIRECTION_NONE ) {
-
-		if ( percent > rs_cfg->task.percent ) {
-
-			rs_cfg->task.direction = RS_DIRECTION_UP;
-			supla_esp_gpio_rs_set_relay(rs_cfg, RS_RELAY_UP, 0, 0);
-
-		    //supla_log(LOG_DEBUG, "task go UP %i,%i", percent, rs_cfg->task.percent);
-
-		} else if ( percent < rs_cfg->task.percent ) {
-
-			rs_cfg->task.direction = RS_DIRECTION_DOWN;
-			supla_esp_gpio_rs_set_relay(rs_cfg, RS_RELAY_DOWN, 0, 0);
-
-			//supla_log(LOG_DEBUG, "task go DOWN, %i,%i", percent, rs_cfg->task.percent);
-
-		} else {
-			//supla_log(LOG_DEBUG, "task finished #1");
-
-			rs_cfg->task.active = 0;
-			supla_esp_gpio_rs_set_relay(rs_cfg, RS_RELAY_OFF, 0, 0);
-		}
-
-	} else if ( ( rs_cfg->task.direction == RS_DIRECTION_UP
-				  && percent <= rs_cfg->task.percent )
-				|| ( rs_cfg->task.direction == RS_DIRECTION_DOWN
-					 && percent >= rs_cfg->task.percent )  ) {
-
-		if ( rs_cfg->task.percent == 0
-			 && 1 == supla_esp_gpio_rs_time_margin(rs_cfg, rs_cfg->full_opening_time, rs_cfg->up_time, 5) ) { // margin 5%
-
-			//supla_log(LOG_DEBUG, "UP MARGIN 5%");
-
-		} else if ( rs_cfg->task.percent == 100
-				    && 1 == supla_esp_gpio_rs_time_margin(rs_cfg, rs_cfg->full_closing_time, rs_cfg->down_time, 5) ) {
-
-			//supla_log(LOG_DEBUG, "DOWN MARGIN 5%");
-
-		} else {
-
-			rs_cfg->task.active = 0;
-			supla_esp_gpio_rs_set_relay(rs_cfg, RS_RELAY_OFF, 0, 0);
-
-			//supla_log(LOG_DEBUG, "task finished #2");
-
-		}
-
-
-	}
-
-
-
-}
-
-void
-supla_esp_gpio_rs_timer_cb(void *timer_arg) {
-
-	supla_roller_shutter_cfg_t *rs_cfg = (supla_roller_shutter_cfg_t*)timer_arg;
-
-	if ( supla_esp_gpio_init_time == 0 )
-		return;
-
-	unsigned int t = system_get_time()/100000;
-
-	if ( t == 0 )
-		t = 1;
-
-
-	if ( 1 == __supla_esp_gpio_relay_is_hi(rs_cfg->up) ) {
-
-		rs_cfg->down_time = 0;
-		rs_cfg->up_time += (t-rs_cfg->last_time)*100;
-
-		supla_esp_gpio_rs_calibrate(rs_cfg, *rs_cfg->full_opening_time, rs_cfg->up_time, 100);
-		supla_esp_gpio_rs_move_position(rs_cfg, rs_cfg->full_opening_time, &rs_cfg->up_time, 1);
-
-	} else if ( 1 == __supla_esp_gpio_relay_is_hi(rs_cfg->down) ) {
-
-		rs_cfg->down_time += (t-rs_cfg->last_time)*100;
-		rs_cfg->up_time = 0;
-
-		supla_esp_gpio_rs_calibrate(rs_cfg, *rs_cfg->full_closing_time, rs_cfg->down_time, 10100);
-		supla_esp_gpio_rs_move_position(rs_cfg, rs_cfg->full_closing_time, &rs_cfg->down_time, 0);
-
-	} else {
-
-		if ( rs_cfg->up_time != 0 )
-			rs_cfg->up_time = 0;
-
-		if ( rs_cfg->down_time != 0 )
-			rs_cfg->down_time = 0;
-
-	}
-
-
-
-	supla_esp_gpio_rs_task_processing(rs_cfg);
-
-
-	if ( rs_cfg->last_time-rs_cfg->n >= 10 ) { // 10 == 1 sec.
-
-		if ( rs_cfg->last_position != *rs_cfg->position ) {
-
-			rs_cfg->last_position = *rs_cfg->position;
-			supla_esp_channel_value_changed(rs_cfg->up->channel, (rs_cfg->last_position-100)/100);
-		}
-
-		if ( rs_cfg->up_time > 600000 || rs_cfg->down_time > 600000 ) { // 10 min. - timeout
-			supla_esp_gpio_rs_set_relay(rs_cfg, RS_RELAY_OFF, 0, 0);
-		}
-		
-		//supla_log(LOG_DEBUG, "UT: %i, DT: %i, FOT: %i, FCT: %i, pos: %i", rs_cfg->up_time, rs_cfg->down_time, *rs_cfg->full_opening_time, *rs_cfg->full_closing_time, *rs_cfg->position);
-		rs_cfg->n = t;
-	}
-
-
-
-	rs_cfg->last_time = t;
-}
-
-void
-supla_esp_gpio_rs_cancel_task(supla_roller_shutter_cfg_t *rs_cfg) {
-
-	if ( rs_cfg == NULL )
-		return;
-
-	//supla_log(LOG_DEBUG, "Task canceled");
-
-	rs_cfg->task.active = 0;
-	rs_cfg->task.percent = 0;
-	rs_cfg->task.direction = RS_DIRECTION_NONE;
-
-	supla_esp_save_state(RS_SAVE_STATE_DELAY);
-}
-
-
-void supla_esp_gpio_rs_add_task(int idx, uint8 percent) {
-
-	if ( idx < 0
-		 || idx >= RS_MAX_COUNT
-		 || ((*supla_rs_cfg[idx].position)-100)/100 == percent )
-		return;
-
-	if ( percent > 100 )
-		percent = 100;
-
-	//supla_log(LOG_DEBUG, "Task added %i", percent);
-
-	supla_rs_cfg[idx].task.percent = percent;
-	supla_rs_cfg[idx].task.direction = RS_DIRECTION_NONE;
-	supla_rs_cfg[idx].task.active = 1;
-
-	supla_esp_save_state(RS_SAVE_STATE_DELAY);
-
-}
-
-#endif /*_ROLLERSHUTTER_SUPPORT*/
+void GPIO_ICACHE_FLASH supla_esp_gpio_set_motion_sensor_state(void *timer_arg);
 
 void
 gpio16_output_conf(void)
@@ -491,33 +112,22 @@ gpio_output_get(void)
 uint8
 gpio__input_get(uint8 port)
 {
+#ifdef BOARD_GPIO_INPUT_IS_HI
+	BOARD_GPIO_INPUT_IS_HI
+#endif
+
 	if ( port == 16 )
       return gpio16_input_get();
 
 	return GPIO_INPUT_GET(GPIO_ID_PIN(port));
 }
 
-void  supla_esg_gpio_start_cfg_mode(void) {
-
-	if ( supla_esp_cfgmode_started() == 0 ) {
-
-		#ifdef BEFORE_CFG_ENTER
-			BEFORE_CFG_ENTER
-		#endif
-
-		supla_esp_devconn_stop();
-		supla_esp_cfgmode_start();
-
-	};
-
-}
-
-void
+void GPIO_ICACHE_FLASH
 supla_esp_gpio_enable_input_port(char port) {
 
 	if ( port < 1 || port > 15 ) return;
 
-    gpio_output_set(0, 0, 0, GPIO_ID_PIN(port));
+    gpio_output_set(0, 0, 0, BIT(port));
 
     gpio_register_set(GPIO_PIN_ADDR(port), GPIO_PIN_INT_TYPE_SET(GPIO_PIN_INTR_DISABLE)
                       | GPIO_PIN_PAD_DRIVER_SET(GPIO_PAD_DRIVER_DISABLE)
@@ -529,219 +139,184 @@ supla_esp_gpio_enable_input_port(char port) {
 }
 
 void supla_esp_gpio_btn_irq_lock(uint8 lock) {
+  supla_input_cfg_t *input_cfg;
 
-	supla_input_cfg_t *input_cfg;
-	int a;
+  ETS_GPIO_INTR_DISABLE();
 
-	ETS_GPIO_INTR_DISABLE();
+  for (int a = 0; a < INPUT_MAX_COUNT; a++) {
+    input_cfg = &supla_input_cfg[a];
 
-	for(a=0;a<INPUT_MAX_COUNT;a++) {
+    if (input_cfg->gpio_id != 255 && input_cfg->gpio_id < 16 &&
+        !(input_cfg->flags & INPUT_FLAG_DISABLE_INTR) &&
+        (input_cfg->type == INPUT_TYPE_BTN_MONOSTABLE ||
+         input_cfg->type == INPUT_TYPE_BTN_BISTABLE ||
+         input_cfg->type == INPUT_TYPE_MOTION_SENSOR)) {
+      gpio_pin_intr_state_set(GPIO_ID_PIN(input_cfg->gpio_id),
+          lock == 1 ? GPIO_PIN_INTR_DISABLE
+          : GPIO_PIN_INTR_ANYEDGE);
 
-		input_cfg = &supla_input_cfg[a];
+      if (lock == 1)
+        GPIO_REG_WRITE(GPIO_STATUS_W1TC_ADDRESS, BIT(input_cfg->gpio_id));
+    }
+  }
 
-		if ( input_cfg->gpio_id != 255
-				&& input_cfg->gpio_id < 16
-				&& ( input_cfg->type == INPUT_TYPE_BTN_MONOSTABLE
-					 || input_cfg->type == INPUT_TYPE_BTN_MONOSTABLE_RS
-					 || input_cfg->type == INPUT_TYPE_BTN_BISTABLE ) ) {
+  ETS_GPIO_INTR_ENABLE();
+}
 
-			gpio_pin_intr_state_set(GPIO_ID_PIN(input_cfg->gpio_id), lock == 1 ? GPIO_PIN_INTR_DISABLE : GPIO_PIN_INTR_ANYEDGE);
+char supla_esp_gpio_relay_hi(int port, unsigned char hi) {
+  unsigned int t = system_get_time();
+  int a;
+  char result = 0;
+  char *state = NULL;
+  supla_roller_shutter_cfg_t *rs_cfg = NULL;
+  char _hi;
 
-			if ( lock == 1 )
-				GPIO_REG_WRITE(GPIO_STATUS_W1TC_ADDRESS, BIT(input_cfg->gpio_id));
+  if (hi == 255) {
+    hi = supla_esp_gpio_relay_is_hi(port) == 1 ? 0 : 1;
+  }
 
-		}
+  _hi = hi;
 
+  for (a = 0; a < RELAY_MAX_COUNT; a++) {
+    if (supla_relay_cfg[a].gpio_id == port) {
 
+      if (supla_relay_cfg[a].flags & RELAY_FLAG_RESTORE ||
+          supla_relay_cfg[a].flags & RELAY_FLAG_RESTORE_FORCE)
+        state = &supla_esp_state.Relay[a];
 
+      if (supla_relay_cfg[a].flags & RELAY_FLAG_LO_LEVEL_TRIGGER)
+        _hi = hi == HI_VALUE ? LO_VALUE : HI_VALUE;
+
+      rs_cfg = supla_esp_gpio_get_rs_cfg(&supla_relay_cfg[a]);
+      break;
+    }
+  }
+
+  // supla_log(LOG_DEBUG, "port=%i, hi=%i",port, hi);
+
+  system_soft_wdt_stop();
+
+  supla_esp_gpio_btn_irq_lock(1);
+  os_delay_us(10);
+
+#ifdef RELAY_BEFORE_CHANGE_STATE
+  RELAY_BEFORE_CHANGE_STATE;
+#endif
+
+  // supla_log(LOG_DEBUG, "1. port = %i, hi = %i", port, _hi);
+
+  ETS_GPIO_INTR_DISABLE();
+  supla_esp_gpio_set_hi(port, _hi);
+  ETS_GPIO_INTR_ENABLE();
+
+#ifdef RELAY_DOUBLE_TRY
+#if RELAY_DOUBLE_TRY > 0
+  os_delay_us(RELAY_DOUBLE_TRY);
+
+  ETS_GPIO_INTR_DISABLE();
+  supla_esp_gpio_set_hi(port, _hi);
+  ETS_GPIO_INTR_ENABLE();
+#endif /*RELAY_DOUBLE_TRY > 0*/
+#endif /*RELAY_DOUBLE_TRY*/
+
+  if (rs_cfg != NULL) {
+
+    if (__supla_esp_gpio_relay_is_hi(rs_cfg->up) == 0 &&
+        __supla_esp_gpio_relay_is_hi(rs_cfg->down) == 0) {
+
+      if (rs_cfg->start_time != 0) {
+        rs_cfg->start_time = 0;
+      }
+
+      if (rs_cfg->stop_time == 0) {
+        rs_cfg->stop_time = t;
+      }
+
+    } else if (__supla_esp_gpio_relay_is_hi(rs_cfg->up) != 0 ||
+        __supla_esp_gpio_relay_is_hi(rs_cfg->down) != 0) {
+
+      if (rs_cfg->start_time == 0) {
+        rs_cfg->start_time = t;
+      }
+
+      if (rs_cfg->stop_time != 0) {
+        rs_cfg->stop_time = 0;
+      }
+    }
+  }
+  result = 1;
+
+  // supla_log(LOG_DEBUG, "2. port = %i, hi = %i, time=%i, t=%i, %i", port, hi,
+  // *time, t, t-(*time));
+
+  os_delay_us(10);
+  supla_esp_gpio_btn_irq_lock(0);
+
+#ifdef RELAY_AFTER_CHANGE_STATE
+  RELAY_AFTER_CHANGE_STATE;
+#endif
+
+  if (result == 1 && state != NULL) {
+    *state = hi;
+    supla_esp_save_state(SAVE_STATE_DELAY);
+  }
+
+  system_soft_wdt_restart();
+
+  return result;
+}
+
+void GPIO_ICACHE_FLASH supla_esp_gpio_relay_switch_by_input(
+    supla_input_cfg_t *input_cfg, unsigned char hi) {
+  supla_esp_gpio_relay_switch(input_cfg->relay_gpio_id, hi);
+}
+
+void GPIO_ICACHE_FLASH supla_esp_gpio_relay_switch(int port, unsigned char hi) {
+
+  if (port != 255) {
+    int channel = -1;
+    for (int i = 0; i < RELAY_MAX_COUNT; i++) {
+      if (supla_relay_cfg[i].gpio_id == port) {
+        channel = supla_relay_cfg[i].channel;
+      }
+    }
+
+#ifndef COUNTDOWN_TIMER_DISABLED
+    // If Time2 > 0 then it is configured as staircase timer. In such case
+    // button behavior depends on cfg parameter
+    if (channel < CFG_TIME2_COUNT && hi != 0 &&
+        supla_esp_cfg.Time2[channel] > 0 &&
+        supla_esp_cfg.StaircaseButtonType == STAIRCASE_BTN_TYPE_RESET) {
+      hi = HI_VALUE;
+    }
+    if (hi == 255) {
+      hi = supla_esp_gpio_relay_is_hi(port) == 1 ? LO_VALUE : HI_VALUE;
+    }
+    if (channel >= 0 && channel < STATE_CFG_TIME2_COUNT) {
+      supla_esp_state.Time2Left[channel] = 0;
+      supla_esp_gpio_relay_set_duration_timer(channel, hi, 0, 0);
+    }
+#endif /*COUNTDOWN_TIMER_DISABLED*/
+
+		supla_esp_gpio_relay_hi(port, hi);
+
+    if (channel >= 0) {
+#ifdef BOARD_CHANNEL_VALUE_CHANGED
+      BOARD_CHANNEL_VALUE_CHANGED
+#else
+        supla_esp_channel_value_changed(channel, 
+            supla_esp_gpio_relay_is_hi(port));
+#endif
+#ifdef MQTT_SUPPORT_ENABLED
+#ifdef MQTT_HA_RELAY_SUPPORT
+      supla_esp_board_mqtt_on_relay_state_changed(channel);
+#endif
+#endif
+    }
 	}
-
-	ETS_GPIO_INTR_ENABLE();
-
-
 }
 
-supla_roller_shutter_cfg_t  *
-supla_esp_gpio_get_rs_cfg(supla_relay_cfg_t *rel_cfg) {
-
-	if ( rel_cfg == NULL )
-		return NULL;
-
-	int a;
-
-	for(a=0;a<RS_MAX_COUNT;a++)
-		if ( supla_rs_cfg[a].up == rel_cfg
-		       || supla_rs_cfg[a].down == rel_cfg ) {
-
-			return &supla_rs_cfg[a];
-		}
-
-	return NULL;
-}
-
-supla_roller_shutter_cfg_t  *
-supla_esp_gpio_get_rs__cfg(int port) {
-
-	int a;
-
-	if ( port == 255 )
-		return NULL;
-
-    for(a=0;a<RELAY_MAX_COUNT;a++)
-    	if ( supla_relay_cfg[a].gpio_id == port ) {
-    		return supla_esp_gpio_get_rs_cfg(&supla_relay_cfg[a]);
-    	}
-
-	return NULL;
-}
-
-char supla_esp_gpio_relay_hi(int port, char hi, char save_before) {
-	
-    unsigned int t = system_get_time();
-    unsigned int *time = NULL;
-    int a;
-    char result = 0;
-    char *state = NULL;
-    supla_roller_shutter_cfg_t *rs_cfg = NULL;
-    char _hi;
-    
-    if ( hi == 255 ) {
-    	hi = supla_esp_gpio_relay_is_hi(port) == 1 ? 0 : 1;
-    }
-
-    _hi = hi;
-    
-   
-    for(a=0;a<RELAY_MAX_COUNT;a++)
-    	if ( supla_relay_cfg[a].gpio_id == port ) {
-
-    		time = &supla_relay_cfg[a].last_time;
-
-    		if ( supla_relay_cfg[a].flags & RELAY_FLAG_RESTORE
-    			 || supla_relay_cfg[a].flags & RELAY_FLAG_RESTORE_FORCE )
-    			state = &supla_esp_state.Relay[a];
-
-    		if ( supla_relay_cfg[a].flags &  RELAY_FLAG_LO_LEVEL_TRIGGER )
-    			_hi = hi == HI_VALUE ? LO_VALUE : HI_VALUE;
-
-    		rs_cfg = supla_esp_gpio_get_rs_cfg(&supla_relay_cfg[a]);
-    		break;
-    	}
-    
-    //supla_log(LOG_DEBUG, "port=%i, hi=%i, save_before=%i",port, hi, save_before);
-    
-    system_soft_wdt_stop();
-
-    if ( save_before == 1
-         && state != NULL
-    	 && ( time == NULL
-    	      || abs(t-(*time)) >= RELAY_MIN_DELAY ) ) {
-
-		*state = hi;
-		supla_esp_save_state(0);
-
-    }
-
-    supla_esp_gpio_btn_irq_lock(1);
-    os_delay_us(10);
-
-	#ifdef RELAY_BEFORE_CHANGE_STATE
-    RELAY_BEFORE_CHANGE_STATE;
-	#endif
-
-    if ( time == NULL
-    	 || abs(t-(*time)) >= RELAY_MIN_DELAY ) {
-
-        //supla_log(LOG_DEBUG, "1. port = %i, hi = %i", port, _hi);
-
-    	ETS_GPIO_INTR_DISABLE();
-    	supla_esp_gpio_set_hi(port, _hi);
-    	ETS_GPIO_INTR_ENABLE();
-
-		#ifdef RELAY_DOUBLE_TRY
-		#if RELAY_DOUBLE_TRY > 0
-			os_delay_us(RELAY_DOUBLE_TRY);
-	
-			ETS_GPIO_INTR_DISABLE();
-			supla_esp_gpio_set_hi(port, _hi);
-			ETS_GPIO_INTR_ENABLE();
-		#endif /*RELAY_DOUBLE_TRY > 0*/
-		#endif /*RELAY_DOUBLE_TRY*/
-
-    	if ( time != NULL ) {
-    		*time = t;
-    	}
-
-    	if ( rs_cfg != NULL ) {
-
-    		if ( __supla_esp_gpio_relay_is_hi(rs_cfg->up) == 0
-    			 && __supla_esp_gpio_relay_is_hi(rs_cfg->down) == 0 ) {
-
-    			if ( rs_cfg->start_time != 0 ) {
-    				rs_cfg->start_time = 0;
-    			}
-    			
-    			if ( rs_cfg->stop_time == 0 ) {
-    				rs_cfg->stop_time = t;
-    			}
-    			
-
-    		} else if ( __supla_esp_gpio_relay_is_hi(rs_cfg->up) != 0
-    				    || __supla_esp_gpio_relay_is_hi(rs_cfg->down) != 0 ) {
-
-    			if ( rs_cfg->start_time == 0 ) {
-    				rs_cfg->start_time = t;
-    			}
-    			
-    			if ( rs_cfg->stop_time != 0 ) {
-    				rs_cfg->stop_time = 0;
-    			}
-
-    		}
-
-    	}
-    	result = 1;
-    }
-
-    //supla_log(LOG_DEBUG, "2. port = %i, hi = %i, time=%i, t=%i, %i", port, hi, *time, t, t-(*time));
-
-    os_delay_us(10);
-    supla_esp_gpio_btn_irq_lock(0);
-
-	#ifdef RELAY_AFTER_CHANGE_STATE
-	RELAY_AFTER_CHANGE_STATE;
-	#endif
-
-    if ( result == 1
-		 && state != NULL
-		 && save_before != 255 ) {
-
-		*state = hi;
-		supla_esp_save_state(SAVE_STATE_DELAY);
-    }
-
-
-    system_soft_wdt_restart();
-
-    return result;
-}
-
-LOCAL void supla_esp_gpio_relay_switch(supla_input_cfg_t *input_cfg, char hi) {
-
-	if (  input_cfg->relay_gpio_id != 255 ) {
-
-		//supla_log(LOG_DEBUG, "RELAY");
-
-		supla_esp_gpio_relay_hi(input_cfg->relay_gpio_id, hi, 0);
-
-		if ( input_cfg->channel != 255 )
-			supla_esp_channel_value_changed(input_cfg->channel, supla_esp_gpio_relay_is_hi(input_cfg->relay_gpio_id));
-
-	}
-
-}
-
-LOCAL void
+void GPIO_ICACHE_FLASH
 supla_esp_gpio_on_input_active(supla_input_cfg_t *input_cfg) {
 
 	//supla_log(LOG_DEBUG, "active");
@@ -750,297 +325,156 @@ supla_esp_gpio_on_input_active(supla_input_cfg_t *input_cfg) {
 	BOARD_ON_INPUT_ACTIVE;
 	#endif
 
-	if ( input_cfg->type == INPUT_TYPE_BTN_MONOSTABLE_RS ) {
+  bool advanced_mode = supla_esp_input_is_advanced_mode_enabled(input_cfg);
 
-		//supla_log(LOG_DEBUG, "RELAY HI");
-		#ifdef _ROLLERSHUTTER_SUPPORT
-			supla_roller_shutter_cfg_t *rs_cfg = supla_esp_gpio_get_rs__cfg(input_cfg->relay_gpio_id);
-			if ( rs_cfg != NULL ) {
-				supla_esp_gpio_rs_set_relay(rs_cfg, rs_cfg->up->gpio_id == input_cfg->relay_gpio_id ? RS_RELAY_UP : RS_RELAY_DOWN, 1, 1);
-			}
-		#endif /*_ROLLERSHUTTER_SUPPORT*/
+  if (((input_cfg->type == INPUT_TYPE_BTN_MONOSTABLE &&
+        input_cfg->flags & INPUT_FLAG_TRIGGER_ON_PRESS) ||
+      input_cfg->type == INPUT_TYPE_BTN_BISTABLE ||
+      input_cfg->type == INPUT_TYPE_MOTION_SENSOR ||
+      advanced_mode) &&
+      input_cfg->relay_gpio_id != 255) {
+    supla_roller_shutter_cfg_t *rs_cfg =
+      supla_esp_gpio_get_rs__cfg(input_cfg->relay_gpio_id);
+    if (rs_cfg != NULL) {
+#ifdef _ROLLERSHUTTER_SUPPORT
+      int direction = (rs_cfg->up->gpio_id == input_cfg->relay_gpio_id)
+        ? RS_RELAY_UP
+        : RS_RELAY_DOWN;
 
-	} else if ( input_cfg->type == INPUT_TYPE_BTN_BISTABLE ) {
+      if (input_cfg->type == INPUT_TYPE_BTN_BISTABLE) {
+        supla_esp_gpio_rs_set_relay(rs_cfg, direction, 1, 1);
+      } else { // monostable
+        if (supla_esp_gpio_rs_get_value(rs_cfg) != RS_RELAY_OFF) {
+          supla_esp_gpio_rs_set_relay(rs_cfg, RS_RELAY_OFF, 1, 1);
+        } else {
+          supla_esp_gpio_rs_set_relay(rs_cfg, direction, 1, 1);
+        }
+      }
+#endif /*_ROLLERSHUTTER_SUPPORT*/
+    } else {
+      unsigned char newState = 255;
+      if (input_cfg->type == INPUT_TYPE_MOTION_SENSOR) {
+        if (input_cfg->active_triggers & SUPLA_ACTION_CAP_TURN_ON) {
+          // ignore when type is motion sensor and AT is configured for turn on
+          return;
+        }
+        newState = 1;
+      }
+      supla_esp_gpio_relay_switch_by_input(input_cfg, newState);
+    }
+  } else if (input_cfg->type == INPUT_TYPE_SENSOR && input_cfg->channel != 255) {
 
-		//supla_log(LOG_DEBUG, "RELAY");
-		supla_esp_gpio_relay_switch(input_cfg, 255);
+    // TODO: add MQTT support for sensor
+    supla_esp_channel_value_changed(input_cfg->channel, 1);
+  }
 
-
-	} else if ( input_cfg->type == INPUT_TYPE_SENSOR
-				&&  input_cfg->channel != 255 ) {
-
-		supla_esp_channel_value_changed(input_cfg->channel, 1);
-
-	}
-
-	input_cfg->last_state = 1;
 }
 
-LOCAL void
+void GPIO_ICACHE_FLASH
 supla_esp_gpio_on_input_inactive(supla_input_cfg_t *input_cfg) {
+  // supla_log(LOG_DEBUG, "inactive");
 
-	//supla_log(LOG_DEBUG, "inactive");
+#ifdef BOARD_ON_INPUT_INACTIVE
+  BOARD_ON_INPUT_INACTIVE;
+#endif
 
-	#ifdef BOARD_ON_INPUT_INACTIVE
-	BOARD_ON_INPUT_INACTIVE;
-	#endif
+  if (((input_cfg->type == INPUT_TYPE_BTN_MONOSTABLE &&
+        !(input_cfg->flags & INPUT_FLAG_TRIGGER_ON_PRESS)) ||
+      input_cfg->type == INPUT_TYPE_BTN_BISTABLE ||
+      input_cfg->type == INPUT_TYPE_MOTION_SENSOR) &&
+      input_cfg->relay_gpio_id != 255) {
+    supla_roller_shutter_cfg_t *rs_cfg =
+      supla_esp_gpio_get_rs__cfg(input_cfg->relay_gpio_id);
+    if (rs_cfg != NULL) {
+#ifdef _ROLLERSHUTTER_SUPPORT
+      int direction = (rs_cfg->up->gpio_id == input_cfg->relay_gpio_id)
+          ? RS_RELAY_UP
+          : RS_RELAY_DOWN;
+      if (input_cfg->type == INPUT_TYPE_BTN_BISTABLE) {
+        // inactive button state (change to "released"/unpress) should
+        // switch off relay only if current RS movement direction is the same
+        // as button
+        if (supla_esp_gpio_rs_get_value(rs_cfg) == direction
+            || (supla_esp_gpio_rs_get_value(rs_cfg) == RS_RELAY_OFF
+            && rs_cfg->delayed_trigger.value == direction)) {
+          if (supla_esp_gpio_is_fb(rs_cfg)) {
+            supla_esp_gpio_rs_set_relay(rs_cfg, RS_RELAY_OFF, 1, 0);
+          } else {
+            supla_esp_gpio_rs_set_relay(rs_cfg, RS_RELAY_OFF, 1, 1);
+          }
+        }
+      } else {  // monostable
+        if (supla_esp_gpio_rs_get_value(rs_cfg) != RS_RELAY_OFF) {
+          supla_esp_gpio_rs_set_relay(rs_cfg, RS_RELAY_OFF, 1, 1);
+        } else {
+          supla_esp_gpio_rs_set_relay(rs_cfg, direction, 1, 1);
+        }
+      }
+#endif /*_ROLLERSHUTTER_SUPPORT*/
+    } else {
+      unsigned char newState = 255;
+      if (input_cfg->type == INPUT_TYPE_MOTION_SENSOR) {
+        if (input_cfg->active_triggers & SUPLA_ACTION_CAP_TURN_OFF) {
+          // ignore when type is motion sensor and AT is configured for turn off
+          return;
+        }
+        newState = 0;
+      }
+      supla_esp_gpio_relay_switch_by_input(input_cfg, newState);
+    }
+  } else if (input_cfg->type == INPUT_TYPE_SENSOR &&
+      input_cfg->channel != 255) {
 
-	if ( input_cfg->type == INPUT_TYPE_BTN_MONOSTABLE_RS ) {
-
-		//supla_log(LOG_DEBUG, "RELAY LO");
-		#ifdef _ROLLERSHUTTER_SUPPORT
-			supla_roller_shutter_cfg_t *rs_cfg = supla_esp_gpio_get_rs__cfg(input_cfg->relay_gpio_id);
-			if ( rs_cfg != NULL ) {
-				supla_esp_gpio_rs_set_relay(rs_cfg, RS_RELAY_OFF, 1, 1);
-			}
-		#endif /*_ROLLERSHUTTER_SUPPORT*/
-	} else if ( input_cfg->type == INPUT_TYPE_BTN_MONOSTABLE
-		 || input_cfg->type == INPUT_TYPE_BTN_BISTABLE ) {
-
-
-		supla_esp_gpio_relay_switch(input_cfg, 255);
-
-	} else if ( input_cfg->type == INPUT_TYPE_SENSOR
-			    &&  input_cfg->channel != 255 ) {
-		supla_esp_channel_value_changed(input_cfg->channel, 0);
-
-	}
-
-	input_cfg->last_state = 0;
+    // TODO: add MQTT support for sensor
+    supla_esp_channel_value_changed(input_cfg->channel, 0);
+  }
 }
 
-uint32 supla_esp_gpio_get_cfg_press_time(supla_input_cfg_t *input_cfg) {
-	return CFG_BTN_PRESS_TIME;
-}
-
-LOCAL void
-supla_esp_gpio_input_timer_cb(void *timer_arg) {
-
-	supla_input_cfg_t *input_cfg = (supla_input_cfg_t *)timer_arg;
-	uint8 v = gpio__input_get(input_cfg->gpio_id);
-	uint8 active = (input_cfg->flags & INPUT_FLAG_PULLUP) ? 0 : 1;
-
-	if ( input_cfg->step == 1 ) {
-
-		if ( v == active ) {
-
-			input_cfg->cycle_counter = 1;
-
-			if ( input_cfg->flags & INPUT_FLAG_CFG_BTN
-				 && ( input_cfg->type == INPUT_TYPE_BTN_MONOSTABLE
-					  || input_cfg->type == INPUT_TYPE_BTN_MONOSTABLE_RS
-				      || (system_get_time() - input_cfg->last_active) >= 2000000 ) ) {
-
-				input_cfg->cfg_counter = 0;
-				//supla_log(LOG_DEBUG, "RESET cfg_counter = 0");
-			}
-
-			input_cfg->step = 2;
-			return;
-
-		} else {
-
-			if ( input_cfg->cycle_counter >= INPUT_MIN_CYCLE_COUNT ) {
-
-				supla_esp_gpio_on_input_inactive(input_cfg);
-
-			} else if ( input_cfg->cycle_counter < 255 ) {
-
-				input_cfg->cycle_counter++;
-				return;
-			}
-		}
-
-	} else if ( input_cfg->step > 1 ) {
-
-		if ( input_cfg->cycle_counter < 255 )
-			input_cfg->cycle_counter++;
-
-		if ( v == active ) {
-
-			if ( input_cfg->step == 3
-					&& input_cfg->flags & INPUT_FLAG_CFG_BTN
-					&& ( input_cfg->type == INPUT_TYPE_BTN_MONOSTABLE
-						 || input_cfg->type == INPUT_TYPE_BTN_MONOSTABLE_RS) ) {
-
-				if ( input_cfg->cfg_counter < 2048 )
-					input_cfg->cfg_counter++;
-
-				if ( supla_esp_restart_on_cfg_press == 1 ) {
-					supla_system_restart();
-					return;
-				}
-
-				if ( (input_cfg->cfg_counter * INPUT_CYCLE_TIME) >= GET_CFG_PRESS_TIME(input_cfg) ) {
-
-					// CFG MODE
-					if ( supla_esp_cfgmode_started() == 0 ) {
-
-						supla_esg_gpio_start_cfg_mode();
-
-					} else if ( input_cfg->flags & INPUT_FLAG_FACTORY_RESET ) {
-
-						factory_defaults(1);
-						supla_log(LOG_DEBUG, "Factory defaults");
-						os_delay_us(500000);
-						supla_system_restart();
-					}
-
-
-					input_cfg->step = 0;
-					os_timer_disarm(&input_cfg->timer);
-					return;
-				}
-
-			}
-
-
-			if ( input_cfg->step == 2
-				 && input_cfg->cycle_counter >= INPUT_MIN_CYCLE_COUNT ) {
-
-
-				supla_esp_gpio_on_input_active(input_cfg);
-
-
-				if ( (input_cfg->flags & INPUT_FLAG_CFG_BTN) == 0
-						|| input_cfg->type == INPUT_TYPE_BTN_BISTABLE ) {
-
-					os_timer_disarm(&input_cfg->timer);
-
-				}
-
-
-				input_cfg->cycle_counter = 1;
-				input_cfg->last_active = system_get_time();
-				input_cfg->step = 3;
-
-			}
-
-
-			return;
-		}
-
-
-		if ( input_cfg->step == 3 ) {
-
-			if ( input_cfg->cycle_counter >= INPUT_MIN_CYCLE_COUNT ) {
-
-				if ( input_cfg->flags & INPUT_FLAG_CFG_BTN
-						&& input_cfg->type == INPUT_TYPE_BTN_BISTABLE ) {
-
-					input_cfg->cfg_counter++;
-
-					//supla_log(LOG_DEBUG, "cfg_counter = %i", input_cfg->cfg_counter);
-
-					if ( supla_esp_cfgmode_started() == 0 ) {
-
-						if ( input_cfg->cfg_counter >= CFG_BTN_PRESS_COUNT ) {
-							input_cfg->cfg_counter = 0;
-
-							// CFG MODE
-							supla_esg_gpio_start_cfg_mode();
-						}
-
-					} else if ( (system_get_time() - supla_esp_cfgmode_entertime) > 3000000 ) {
-
-						//  EXIT CFG MODE
-						supla_system_restart();
-
-					}
-
-
-
-				}
-
-				if ( input_cfg->flags & INPUT_FLAG_CFG_BTN
-						&& supla_esp_cfgmode_started() == 1
-						&& ( input_cfg->type == INPUT_TYPE_BTN_MONOSTABLE
-							 || input_cfg->type == INPUT_TYPE_BTN_MONOSTABLE_RS )
-						&& (system_get_time() - supla_esp_cfgmode_entertime) > 3000000 ) {
-
-					// EXIT CFG MODE
-					supla_system_restart();
-
-				} else {
-
-					supla_esp_gpio_on_input_inactive(input_cfg);
-
-				}
-
-
-			} else {
-				return;
-			}
-
-		}
-
-	}
-
-
-    input_cfg->step = 0;
-    os_timer_disarm(&input_cfg->timer);
-
-}
-
-LOCAL void
-supla_esp_gpio_intr_handler(void *params) {
-
-
-	int a;
-	uint32 gpio_status = GPIO_REG_READ(GPIO_STATUS_ADDRESS);
-	supla_input_cfg_t *input_cfg;
-
-	#ifdef BOARD_INTR_HANDLER
-	BOARD_INTR_HANDLER;
-	#endif
-
-	//supla_log(LOG_DEBUG, "INTR");
-
-	for(a=0;a<INPUT_MAX_COUNT;a++) {
-
-		input_cfg = &supla_input_cfg[a];
-
-		if ( input_cfg->gpio_id != 255
-			 && input_cfg->gpio_id < 16
-			 && gpio_status & BIT(input_cfg->gpio_id) ) {
-
-			ETS_GPIO_INTR_DISABLE();
-
-            gpio_pin_intr_state_set(GPIO_ID_PIN(input_cfg->gpio_id), GPIO_PIN_INTR_DISABLE);
-            GPIO_REG_WRITE(GPIO_STATUS_W1TC_ADDRESS, gpio_status & BIT(input_cfg->gpio_id)); // //clear interrupt status
-
-            if ( input_cfg->type != INPUT_TYPE_CUSTOM &&
-            		( input_cfg->step == 0
-            		  || input_cfg->step == 3 ) ) {
-
-            	if ( input_cfg->step == 0 )
-                	input_cfg->step = 1;
-
-    			os_timer_disarm(&input_cfg->timer);
-    			os_timer_setfn(&input_cfg->timer, supla_esp_gpio_input_timer_cb, input_cfg);
-    			os_timer_arm (&input_cfg->timer, INPUT_CYCLE_TIME, true);
-            }
-
-            gpio_pin_intr_state_set(GPIO_ID_PIN(input_cfg->gpio_id), GPIO_PIN_INTR_ANYEDGE);
-            gpio_status = gpio_status ^ BIT(input_cfg->gpio_id);
-
-            ETS_GPIO_INTR_ENABLE();
-		}
-	}
-
-
-	// Disable uncaught interrupts
-	if (gpio_status != 0) {
-		for(a=0;a<16;a++) {
-			if ( gpio_status & BIT(a) && INTR_CLEAR_MASK & BIT(a) ) {
-				ETS_GPIO_INTR_DISABLE();
-				gpio_pin_intr_state_set(GPIO_ID_PIN(a), GPIO_PIN_INTR_DISABLE);
-				GPIO_REG_WRITE(GPIO_STATUS_W1TC_ADDRESS, gpio_status & BIT(a));
-				ETS_GPIO_INTR_ENABLE();
-			}
-		}
-	}
-
+LOCAL void supla_esp_gpio_intr_handler(void *params) {
+  int a;
+  uint32 gpio_status = GPIO_REG_READ(GPIO_STATUS_ADDRESS);
+  supla_input_cfg_t *input_cfg;
+
+#ifdef BOARD_INTR_HANDLER
+  BOARD_INTR_HANDLER;
+#endif
+
+  // supla_log(LOG_DEBUG, "INTR");
+
+  for (a = 0; a < INPUT_MAX_COUNT; a++) {
+    input_cfg = &supla_input_cfg[a];
+    if (input_cfg->gpio_id != 255 && input_cfg->gpio_id < 16 &&
+        gpio_status & BIT(input_cfg->gpio_id)) {
+      ETS_GPIO_INTR_DISABLE();
+
+      gpio_pin_intr_state_set(GPIO_ID_PIN(input_cfg->gpio_id),
+          GPIO_PIN_INTR_DISABLE);
+      GPIO_REG_WRITE(GPIO_STATUS_W1TC_ADDRESS,
+          gpio_status &
+          BIT(input_cfg->gpio_id));  // //clear interrupt status
+
+//      supla_log(LOG_DEBUG, "INTR start timer %d", input_cfg->gpio_id);
+      supla_esp_input_start_debounce_timer(input_cfg);
+
+      gpio_pin_intr_state_set(GPIO_ID_PIN(input_cfg->gpio_id),
+          GPIO_PIN_INTR_ANYEDGE);
+      gpio_status = gpio_status ^ BIT(input_cfg->gpio_id);
+
+      ETS_GPIO_INTR_ENABLE();
+    }
+  }
+
+  // Disable uncaught interrupts
+  if (gpio_status != 0) {
+    for (a = 0; a < 16; a++) {
+      if (gpio_status & BIT(a) && INTR_CLEAR_MASK & BIT(a)) {
+        ETS_GPIO_INTR_DISABLE();
+        gpio_pin_intr_state_set(GPIO_ID_PIN(a), GPIO_PIN_INTR_DISABLE);
+        GPIO_REG_WRITE(GPIO_STATUS_W1TC_ADDRESS, gpio_status & BIT(a));
+        ETS_GPIO_INTR_ENABLE();
+      }
+    }
+  }
 }
 
 void GPIO_ICACHE_FLASH
@@ -1050,8 +484,8 @@ supla_esp_gpio_init(void) {
 	//supla_log(LOG_DEBUG, "supla_esp_gpio_init");
 
 	supla_esp_gpio_init_time = 0;
-	supla_esp_restart_on_cfg_press = 0;
-
+  supla_esp_restart_on_cfg_press = 0;
+  bool schedule_motion_sensor_update = false;
 	memset(&supla_input_cfg, 0, sizeof(supla_input_cfg));
 	memset(&supla_relay_cfg, 0, sizeof(supla_relay_cfg));
 	memset(&supla_rs_cfg, 0, sizeof(supla_rs_cfg));
@@ -1059,8 +493,9 @@ supla_esp_gpio_init(void) {
 	for (a=0; a<INPUT_MAX_COUNT; a++) {
 		supla_input_cfg[a].gpio_id = 255;
 		supla_input_cfg[a].relay_gpio_id = 255;
+		supla_input_cfg[a].disabled_relay_gpio_id = 255;
 		supla_input_cfg[a].channel = 255;
-		supla_input_cfg[a].last_state = 255;
+		supla_input_cfg[a].last_state = INPUT_STATE_INACTIVE;
 	}
 
 	for (a=0; a<RELAY_MAX_COUNT; a++) {
@@ -1071,9 +506,27 @@ supla_esp_gpio_init(void) {
 
 	for(a=0; a<RS_MAX_COUNT; a++) {
 		supla_rs_cfg[a].position = &supla_esp_state.rs_position[a];
+		supla_rs_cfg[a].tilt = &supla_esp_state.tilt[a];
 		supla_rs_cfg[a].full_opening_time = &supla_esp_cfg.Time1[a];
 		supla_rs_cfg[a].full_closing_time = &supla_esp_cfg.Time2[a];
-	}
+		supla_rs_cfg[a].tilt_change_time = &supla_esp_cfg.Time3[a];
+    supla_rs_cfg[a].auto_opening_time = &supla_esp_cfg.AutoCalOpenTime[a];
+    supla_rs_cfg[a].auto_closing_time = &supla_esp_cfg.AutoCalCloseTime[a];
+    supla_rs_cfg[a].tilt_type = &supla_esp_cfg.TiltControlType[a];
+    supla_rs_cfg[a].rs_time_margin = 110;  // default
+    supla_log(
+        LOG_DEBUG,
+        "RS loaded: position %d, tilt %d, auto open %d, auto close %d, "
+        "open %d, close %d, tilting %d, type %d",
+        *supla_rs_cfg[a].position, *supla_rs_cfg[a].tilt,
+        *supla_rs_cfg[a].auto_opening_time, *supla_rs_cfg[a].auto_closing_time,
+        *supla_rs_cfg[a].full_opening_time, *supla_rs_cfg[a].full_closing_time,
+        *supla_rs_cfg[a].tilt_change_time, *supla_rs_cfg[a].tilt_type);
+    if (*supla_rs_cfg[a].tilt_type == 0 ||
+        *supla_rs_cfg[a].tilt_change_time == 0) {
+      *supla_rs_cfg[a].tilt = -1;
+    }
+  }
 
 	#if defined(USE_GPIO3) ||  defined(USE_GPIO1) || defined(UART_SWAP)
 		 system_uart_swap ();
@@ -1133,35 +586,50 @@ supla_esp_gpio_init(void) {
 				 && !(supla_relay_cfg[a].flags & RELAY_FLAG_VIRTUAL_GPIO ) ) {
 
 				GPIO_REG_WRITE(GPIO_STATUS_W1TC_ADDRESS, BIT(supla_relay_cfg[a].gpio_id));
-				gpio_pin_intr_state_set(GPIO_ID_PIN(supla_relay_cfg[a].gpio_id), GPIO_PIN_INTR_DISABLE);
-				gpio_output_set(0, GPIO_ID_PIN(supla_relay_cfg[a].gpio_id), GPIO_ID_PIN(supla_relay_cfg[a].gpio_id), 0);
+        gpio_pin_intr_state_set(GPIO_ID_PIN(supla_relay_cfg[a].gpio_id),
+            GPIO_PIN_INTR_DISABLE);
 
 			} else if (supla_relay_cfg[a].gpio_id == 16) {
 				gpio16_output_conf();
 			}
 
+      // In case of motion sensor input we don't restore state, but we'll
+      // set relay according to startup state of input.
+      int input_number = 0;
+      for (; input_number < INPUT_MAX_COUNT; input_number++) {
+        if (supla_input_cfg[input_number].relay_gpio_id ==
+            supla_relay_cfg[a].gpio_id) {
+          break;
+        }
+      }
+      if (input_number < INPUT_MAX_COUNT &&
+          supla_input_cfg[input_number].type == INPUT_TYPE_MOTION_SENSOR) {
+        schedule_motion_sensor_update = true;
+        continue;
+      }
 
-
-			supla_relay_cfg[a].last_time = 2147483647;
-
-			if ( supla_relay_cfg[a].flags & RELAY_FLAG_RESTORE_FORCE ) {
-
-				//supla_log(LOG_DEBUG, "RESTORE_FORCE, %i, %i, %i", a, supla_relay_cfg[a].gpio_id, supla_esp_state.Relay[a]);
-				supla_esp_gpio_relay_hi(supla_relay_cfg[a].gpio_id, supla_esp_state.Relay[a], 255);
-
-			} else if ( supla_relay_cfg[a].flags & RELAY_FLAG_RESTORE ) {
-
-				struct rst_info *rtc_info = system_get_rst_info();
-
-				if ( rtc_info->reason == 0 ) {
-					   //supla_log(LOG_DEBUG, "RESTORE");
-					   supla_esp_gpio_relay_hi(supla_relay_cfg[a].gpio_id, supla_esp_state.Relay[a], 255);
-				}
-
+      if (supla_relay_cfg[a].flags & RELAY_FLAG_RESTORE_FORCE ||
+          (supla_relay_cfg[a].flags & RELAY_FLAG_RESTORE &&
+           system_get_rst_info()->reason == 0)) {
+				//supla_log(LOG_DEBUG, "RESTORE, %i, %i, %i", a, supla_relay_cfg[a].gpio_id, supla_esp_state.Relay[a]);
+#ifndef COUNTDOWN_TIMER_DISABLED
+        int channel = supla_relay_cfg[a].channel;
+        if (channel >= 0 && channel < STATE_CFG_TIME2_COUNT) {
+          supla_log(LOG_DEBUG, 
+              "Restoring relay state: ch %d, value %d, duration %d",
+              channel, supla_esp_state.Relay[a],
+              supla_esp_state.Time2Left[channel]);
+          supla_esp_gpio_relay_set_duration_timer(channel,
+              supla_esp_state.Relay[a],
+              supla_esp_state.Time2Left[channel], 0);
+        }
+#endif /*COUNTDOWN_TIMER_DISABLED*/
+        supla_esp_gpio_relay_hi(supla_relay_cfg[a].gpio_id,
+            supla_esp_state.Relay[a]);
 			} else if ( supla_relay_cfg[a].flags & RELAY_FLAG_RESET ) {
 
 				//supla_log(LOG_DEBUG, "LO_VALUE");
-				supla_esp_gpio_relay_hi(supla_relay_cfg[a].gpio_id, LO_VALUE, 0);
+				supla_esp_gpio_relay_hi(supla_relay_cfg[a].gpio_id, LO_VALUE);
 
 			}
 		}
@@ -1174,19 +642,20 @@ supla_esp_gpio_init(void) {
     	    && supla_input_cfg[a].gpio_id < 16
     		&& supla_input_cfg[a].type != 0 ) {
 
-    	//supla_log(LOG_DEBUG, "input init %i", supla_input_cfg[a].gpio_id);
+    	  //supla_log(LOG_DEBUG, "input init %i", supla_input_cfg[a].gpio_id);
 
-        gpio_output_set(0, 0, 0, GPIO_ID_PIN(supla_input_cfg[a].gpio_id));
+        gpio_output_set(0, 0, 0, BIT(supla_input_cfg[a].gpio_id));
 
         gpio_register_set(GPIO_PIN_ADDR(supla_input_cfg[a].gpio_id), GPIO_PIN_INT_TYPE_SET(GPIO_PIN_INTR_DISABLE)
                           | GPIO_PIN_PAD_DRIVER_SET(GPIO_PAD_DRIVER_DISABLE)
                           | GPIO_PIN_SOURCE_SET(GPIO_AS_PIN_SOURCE));
 
         GPIO_REG_WRITE(GPIO_STATUS_W1TC_ADDRESS, BIT(supla_input_cfg[a].gpio_id));
-        
+
         if ( !(supla_input_cfg[a].flags & INPUT_FLAG_DISABLE_INTR) ) {
+          //supla_log(LOG_DEBUG, "Input %d - enabling intr anyedge", supla_input_cfg[a].gpio_id);
         	gpio_pin_intr_state_set(GPIO_ID_PIN(supla_input_cfg[a].gpio_id), GPIO_PIN_INTR_ANYEDGE);
-        } 
+        }
 
     }
 
@@ -1208,10 +677,27 @@ supla_esp_gpio_init(void) {
 			}
 	#endif /*_ROLLERSHUTTER_SUPPORT*/
 
+    for (int i = 0; i < INPUT_MAX_COUNT; i++) {
+      if (supla_input_cfg[i].gpio_id != 255) {
+        if (supla_input_cfg[i].type == INPUT_TYPE_MOTION_SENSOR &&
+            supla_input_cfg[i].relay_gpio_id != 255) {
+          schedule_motion_sensor_update = true;
+        }
+        if (!(supla_input_cfg[i].flags & INPUT_FLAG_DISABLE_INTR)) {
+          supla_esp_input_start_debounce_timer(&supla_input_cfg[i]);
+        }
+      }
+    }
+
+    if (schedule_motion_sensor_update) {
+      os_timer_disarm(&supla_motion_sensor_init_timer);
+      os_timer_setfn(&supla_motion_sensor_init_timer, supla_esp_gpio_set_motion_sensor_state, NULL);
+      os_timer_arm (&supla_motion_sensor_init_timer, INPUT_SILENT_STARTUP_TIME_MS + 100, 0);
+    }
+
 }
 
-void
-supla_esp_gpio_set_hi(int port, char hi) {
+void supla_esp_gpio_set_hi(int port, unsigned char hi) {
 
     //supla_log(LOG_DEBUG, "supla_esp_gpio_set_hi %i, %i", port, hi);
 
@@ -1227,7 +713,7 @@ supla_esp_gpio_set_hi(int port, char hi) {
 
 }
 
-void supla_esp_gpio_set_led(char r, char g, char b) {
+void GPIO_ICACHE_FLASH supla_esp_gpio_set_led(char r, char g, char b) {
 
 	os_timer_disarm(&supla_gpio_timer1);
 	os_timer_disarm(&supla_gpio_timer2);
@@ -1254,7 +740,7 @@ void GPIO_ICACHE_FLASH supla_esp_gpio_reinit_led(void) {
 		#if LED_RED_PORT != 16
 			GPIO_REG_WRITE(GPIO_STATUS_W1TC_ADDRESS, BIT(LED_RED_PORT));
 			gpio_pin_intr_state_set(GPIO_ID_PIN(LED_RED_PORT), GPIO_PIN_INTR_DISABLE);
-			gpio_output_set(0, GPIO_ID_PIN(LED_RED_PORT), GPIO_ID_PIN(LED_RED_PORT), 0);
+			gpio_output_set(0, BIT(LED_RED_PORT), BIT(LED_RED_PORT), 0);
 		#endif
 	#endif
 
@@ -1262,7 +748,7 @@ void GPIO_ICACHE_FLASH supla_esp_gpio_reinit_led(void) {
 		#if LED_GREEN_PORT != 16
 			GPIO_REG_WRITE(GPIO_STATUS_W1TC_ADDRESS, BIT(LED_GREEN_PORT));
 			gpio_pin_intr_state_set(GPIO_ID_PIN(LED_GREEN_PORT), GPIO_PIN_INTR_DISABLE);
-			gpio_output_set(0, GPIO_ID_PIN(LED_GREEN_PORT), GPIO_ID_PIN(LED_GREEN_PORT), 0);
+			gpio_output_set(0, BIT(LED_GREEN_PORT), BIT(LED_GREEN_PORT), 0);
 		#endif
 	#endif
 
@@ -1270,7 +756,7 @@ void GPIO_ICACHE_FLASH supla_esp_gpio_reinit_led(void) {
 		#if LED_BLUE_PORT != 16
 			GPIO_REG_WRITE(GPIO_STATUS_W1TC_ADDRESS, BIT(LED_BLUE_PORT));
 			gpio_pin_intr_state_set(GPIO_ID_PIN(LED_BLUE_PORT), GPIO_PIN_INTR_DISABLE);
-			gpio_output_set(0, GPIO_ID_PIN(LED_BLUE_PORT), GPIO_ID_PIN(LED_BLUE_PORT), 0);
+			gpio_output_set(0, BIT(LED_BLUE_PORT), BIT(LED_BLUE_PORT), 0);
 		#endif
 	#endif
 
@@ -1281,7 +767,7 @@ void GPIO_ICACHE_FLASH supla_esp_gpio_reinit_led(void) {
 
 
 #if defined(LED_RED_PORT) || defined(LED_GREEN_PORT) || defined(LED_BLUE_PORT)
-void
+void GPIO_ICACHE_FLASH
 supla_esp_gpio_led_blinking_func(void *timer_arg) {
 
 	#ifdef LED_RED_PORT
@@ -1301,7 +787,7 @@ supla_esp_gpio_led_blinking_func(void *timer_arg) {
 
 }
 
-void
+void GPIO_ICACHE_FLASH
 supla_esp_gpio_led_blinking(int led, int time) {
 
 	supla_esp_gpio_set_led(0, 0, 0);
@@ -1315,7 +801,9 @@ supla_esp_gpio_led_blinking(int led, int time) {
 void GPIO_ICACHE_FLASH
 supla_esp_gpio_state_disconnected(void) {
 
-	if ( supla_last_state == STATE_DISCONNECTED )
+	if ( supla_last_state == STATE_DISCONNECTED
+			|| supla_esp_cfgmode_started()
+			|| supla_esp_update_started())
 		return;
 
 	supla_last_state = STATE_DISCONNECTED;
@@ -1342,12 +830,12 @@ supla_esp_gpio_state_disconnected(void) {
 void GPIO_ICACHE_FLASH
 supla_esp_gpio_state_ipreceived(void) {
 
-	if ( supla_last_state == STATE_IPRECEIVED )
+	if ( supla_last_state == STATE_IPRECEIVED
+			|| supla_esp_cfgmode_started()
+			|| supla_esp_update_started())
 		return;
 
 	supla_last_state = STATE_IPRECEIVED;
-
-	supla_log(LOG_DEBUG, "IP Received");
 
 	#ifdef BOARD_ESP_ON_STATE_CHANGED
 	supla_esp_board_on_state_changed(supla_last_state);
@@ -1386,12 +874,12 @@ supla_esp_gpio_enable_sensors(void *timer_arg) {
 void GPIO_ICACHE_FLASH
 supla_esp_gpio_state_connected(void) {
 
-	if ( supla_last_state == STATE_CONNECTED )
+	if ( supla_last_state == STATE_CONNECTED
+			|| supla_esp_cfgmode_started()
+			|| supla_esp_update_started())
 		return;
 
 	supla_last_state = STATE_CONNECTED;
-
-	supla_log(LOG_DEBUG, "Server connected");
 
 	#ifdef BOARD_ESP_ON_STATE_CHANGED
 	supla_esp_board_on_state_changed(supla_last_state);
@@ -1503,6 +991,81 @@ char  supla_esp_gpio_relay_on(int port) {
 	return supla_esp_gpio_output_is_hi(port) == HI_VALUE ? 1 : 0;
 }
 
+void GPIO_ICACHE_FLASH supla_esp_gpio_relay_set_duration_timer(int channel,
+    int newValue,
+    int durationMs,
+    int senderID) {
+#ifndef COUNTDOWN_TIMER_DISABLED
+  if (channel < STATE_CFG_TIME2_COUNT && channel < CFG_TIME2_COUNT &&
+      supla_esp_cfg.Time2[channel] > 0) {
+    // this is for staircase timer - we reset duration ms to the duration
+    // that was configred on the server.
+    // Staircase timer uses the same implementation as Countdown timer
+    if (newValue == 0) {
+      durationMs = 0;
+      supla_esp_state.Time2Left[channel] = 0;
+    } else {
+      if (durationMs == 0 || supla_esp_state.Time2Left[channel] != durationMs) {
+        durationMs = supla_esp_cfg.Time2[channel];
+      }
+    }
+  }
 
+  supla_esp_countdown_timer_disarm(channel);
 
+  if (durationMs > 0) {
 
+    for (int a = 0; a < RELAY_MAX_COUNT; a++) {
+      if (supla_relay_cfg[a].gpio_id != 255 &&
+          channel == supla_relay_cfg[a].channel) {
+
+        if (newValue == 1 || supla_relay_cfg[a].channel_flags &
+            SUPLA_CHANNEL_FLAG_COUNTDOWN_TIMER_SUPPORTED) {
+
+          char target_value[SUPLA_CHANNELVALUE_SIZE] = {};
+          target_value[0] = newValue ? 0 : 1;
+
+          supla_esp_countdown_timer_countdown(durationMs,
+              supla_relay_cfg[a].gpio_id,
+              channel, target_value, senderID);
+        }
+#if ESP8266_SUPLA_PROTO_VERSION >= 12
+        if (supla_relay_cfg[a].channel_flags &
+            SUPLA_CHANNEL_FLAG_COUNTDOWN_TIMER_SUPPORTED) {
+          TSuplaChannelExtendedValue *ev = (TSuplaChannelExtendedValue *)malloc(
+              sizeof(TSuplaChannelExtendedValue));
+          if (ev != NULL) {
+            supla_esp_countdown_get_state_ev(channel, ev);
+            supla_esp_channel_extendedvalue_changed(channel, ev);
+            free(ev);
+          }
+        }
+#endif /*ESP8266_SUPLA_PROTO_VERSION >= 12*/
+        break;
+      }
+    }
+  }
+#endif /*COUNTDOWN_TIMER_DISABLED*/
+}
+
+void GPIO_ICACHE_FLASH supla_esp_gpio_clear_vars(void) {
+  supla_last_state = STATE_UNKNOWN;
+  supla_esp_gpio_init_time = 0;
+  supla_esp_restart_on_cfg_press = 0;
+  silent_period = true;
+}
+
+void GPIO_ICACHE_FLASH supla_esp_gpio_set_motion_sensor_state(void *timer_arg) {
+  for (int i = 0; i < INPUT_MAX_COUNT; i++) {
+    supla_input_cfg_t *input = &supla_input_cfg[i];
+    if (input->relay_gpio_id != 255 &&
+        input->type == INPUT_TYPE_MOTION_SENSOR) {
+      supla_log(LOG_DEBUG, "sensor state i %d, active %d", i, input->last_state);
+      if (input->last_state == INPUT_STATE_ACTIVE) {
+        supla_esp_gpio_on_input_active(input);
+      } else if (input->last_state == INPUT_STATE_INACTIVE) {
+        supla_esp_gpio_on_input_inactive(input);
+      }
+    }
+  }
+}

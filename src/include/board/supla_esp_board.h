@@ -17,6 +17,8 @@
  */
 
 #include <os_type.h>
+
+#include "supla-dev/proto.h"
 #include "supla_esp.h"
 
 #ifndef SUPLA_ESP_BOARD_H_
@@ -68,6 +70,10 @@
 
 #include "board/h801.h"
 
+#elif defined(__BOARD_lightswitch_at)
+
+#include "board/lightswitch_at.h"
+
 #elif defined(__BOARD_lightswitch_x2) ||        \
     defined(__BOARD_lightswitch_x2_DHT11) ||    \
     defined(__BOARD_lightswitch_x2_DHT22) ||    \
@@ -86,6 +92,9 @@
     defined(__BOARD_inCanRS_DHT11) || defined(__BOARD_inCanRS_DHT22)
 
 #include "board/inCan.h"
+#elif defined(__BOARD_ut_testing)
+#include "board_ut_testing.h"
+
 
 #endif
 

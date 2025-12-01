@@ -18,6 +18,7 @@
 
 #include "supla_ds18b20.h"
 #include "supla_esp.h"
+#include "supla_esp_rs_fb.h"
 
 #define B_CFG_PORT 0
 #define B_RELAY1_PORT 4
@@ -85,11 +86,11 @@ void ICACHE_FLASH_ATTR supla_esp_board_gpio_init(void) {
   supla_input_cfg[1].gpio_id = B_SENSOR_PORT1;
   supla_input_cfg[1].channel = 1;
 
-  supla_input_cfg[2].type = INPUT_TYPE_BTN_MONOSTABLE_RS;
+  supla_input_cfg[2].type = INPUT_TYPE_BTN_MONOSTABLE;
   supla_input_cfg[2].gpio_id = B_BTN1_PORT;
   supla_input_cfg[2].relay_gpio_id = B_RELAY1_PORT;
 
-  supla_input_cfg[3].type = INPUT_TYPE_BTN_MONOSTABLE_RS;
+  supla_input_cfg[3].type = INPUT_TYPE_BTN_MONOSTABLE;
   supla_input_cfg[3].gpio_id = B_BTN2_PORT;
   supla_input_cfg[3].relay_gpio_id = B_RELAY2_PORT;
 
@@ -112,9 +113,9 @@ void ICACHE_FLASH_ATTR supla_esp_board_set_channels(
 
   channels[0].Number = 0;
   channels[0].Type = SUPLA_CHANNELTYPE_RELAY;
-  channels[0].FuncList = SUPLA_BIT_RELAYFUNC_CONTROLLINGTHEROLLERSHUTTER;
+  channels[0].FuncList = SUPLA_BIT_FUNC_CONTROLLINGTHEROLLERSHUTTER;
   channels[0].Default = SUPLA_CHANNELFNC_CONTROLLINGTHEROLLERSHUTTER;
-  channels[0].value[0] = (*supla_rs_cfg[0].position) - 1;
+  channels[0].value[0] = supla_esp_gpio_rs_get_current_position(&supla_rs_cfg[0]);
 
   channels[1].Number = 1;
   channels[1].Type = SUPLA_CHANNELTYPE_SENSORNO;

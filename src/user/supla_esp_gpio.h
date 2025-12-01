@@ -21,6 +21,7 @@
 #define SUPLA_ESP_GPIO_H_
 
 #include "supla_esp.h"
+#include "supla_esp_input.h"
 
 #define RELAY_FLAG_RESET              0x01
 #define RELAY_FLAG_RESTORE            0x02
@@ -29,84 +30,16 @@
 #define RELAY_FLAG_LO_LEVEL_TRIGGER   0x10
 #define RELAY_FLAG_VIRTUAL_GPIO       0x20
 
-#define RS_RELAY_OFF   0
-#define RS_RELAY_UP    2
-#define RS_RELAY_DOWN  1
-
 typedef struct {
+  uint8 gpio_id;
+  uint8 flags;  // RELAY_FLAG_*
+  uint8 channel;
+  unsigned _supla_int_t channel_flags; // SUPLA_CHANNEL_FLAG_*
+} supla_relay_cfg_t;
 
-	uint8 gpio_id;
-	uint8 flags;
-	uint8 type;
-	uint8 step;
-	uint8 cycle_counter;
-	uint16 cfg_counter;
-	uint8 relay_gpio_id;
-	uint8 channel;
-	uint8 last_state;
-
-	ETSTimer timer;
-	unsigned int last_active;
-
-}supla_input_cfg_t;
-
-
-typedef struct {
-
-	uint8 gpio_id;
-	uint8 flags;
-	uint8 channel;
-
-	unsigned int last_time;
-	ETSTimer timer;
-
-}supla_relay_cfg_t;
-
-typedef struct {
-
-	uint8 percent;
-	uint8 direction;
-	uint8 active;
-
-}rs_task_t;
-
-typedef struct {
-
-	ETSTimer timer;
-	uint8 value;
-
-}supla_rs_delayed_trigger;
-
-typedef struct {
-
-	supla_relay_cfg_t *up;
-	supla_relay_cfg_t *down;
-
-	int *position;
-
-    unsigned int *full_opening_time;
-    unsigned int *full_closing_time;
-
-	unsigned int n;
-
-	unsigned int up_time;
-	unsigned int down_time;
-	unsigned int last_time;
-	unsigned int stop_time;
-	unsigned int start_time;
-
-	ETSTimer timer;
-	supla_rs_delayed_trigger delayed_trigger;
-	rs_task_t task;
-
-	int last_position;
-
-}supla_roller_shutter_cfg_t;
-
-extern supla_input_cfg_t supla_input_cfg[INPUT_MAX_COUNT];
 extern supla_relay_cfg_t supla_relay_cfg[RELAY_MAX_COUNT];
-extern supla_roller_shutter_cfg_t supla_rs_cfg[RS_MAX_COUNT];
 extern unsigned int supla_esp_gpio_init_time;
+extern bool silent_period;
 extern unsigned char supla_esp_restart_on_cfg_press;
 
 void gpio16_output_conf(void);
@@ -127,25 +60,40 @@ void GPIO_ICACHE_FLASH supla_esp_gpio_state_cfgmode(void);
 void GPIO_ICACHE_FLASH supla_esp_gpio_state_update(void);
 #endif
 
-void supla_esp_gpio_rs_set_relay(supla_roller_shutter_cfg_t *rs_cfg, uint8 value, uint8 cancel_task, uint8 stop_delay);
-uint8 supla_esp_gpio_rs_get_value(supla_roller_shutter_cfg_t *rs_cfg);
+// when this method is called, it will execute default action configured for
+// this input when its state changes to "active", i.e. button is pressed.
+// (i.e. it will toggle relay state on button press)
+void GPIO_ICACHE_FLASH
+supla_esp_gpio_on_input_active(supla_input_cfg_t *input_cfg);
 
-void supla_esp_gpio_set_hi(int port, char hi);
+// when this method is called, it will execute default action configured for
+// this input when its state changes to "inactive", i.e. button is released.
+// (i.e. it will toggle relay state on button release)
+void GPIO_ICACHE_FLASH
+supla_esp_gpio_on_input_inactive(supla_input_cfg_t *input_cfg);
+
+void supla_esp_gpio_set_hi(int port, unsigned char hi);
 char supla_esp_gpio_output_is_hi(int port);
 char supla_esp_gpio_relay_is_hi(int port);
 char __supla_esp_gpio_relay_is_hi(supla_relay_cfg_t *relay_cfg);
-char supla_esp_gpio_relay_hi(int port, char hi, char save_before);
+char supla_esp_gpio_relay_hi(int port, unsigned char hi);
 char supla_esp_gpio_relay_on(int port);
+
+// use this method to control relay from local buttons etc.
+// It will send updated channel value and manage countdown timers
+void GPIO_ICACHE_FLASH supla_esp_gpio_relay_switch(int port,
+    unsigned char hi);
 
 void supla_esp_gpio_set_led(char r, char g, char b);
 void supla_esp_gpio_led_blinking(int led, int time);
 
-#ifdef _ROLLERSHUTTER_SUPPORT
-void supla_esp_gpio_rs_cancel_task(supla_roller_shutter_cfg_t *rs_cfg);
-void supla_esp_gpio_rs_add_task(int idx, uint8 percent);
-
-supla_roller_shutter_cfg_t  *supla_esp_gpio_get_rs__cfg(int port);
-#endif /*_ROLLERSHUTTER_SUPPORT*/
-
+void GPIO_ICACHE_FLASH supla_esp_gpio_relay_set_duration_timer(int channel,
+    int newValue, int durationMs, int senderID);
 #endif /* SUPLA_ESP_GPIO_H_ */
 
+#ifdef BOARD_ESP_ON_STATE_CHANGED
+void GPIO_ICACHE_FLASH supla_esp_board_on_state_changed(char supla_last_state);
+#endif
+
+// method used only in UT tests
+void GPIO_ICACHE_FLASH supla_esp_gpio_clear_vars(void);

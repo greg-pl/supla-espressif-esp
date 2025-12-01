@@ -172,9 +172,9 @@ void ICACHE_FLASH_ATTR supla_esp_board_set_channels(
     channels[2].Number = 2;
     channels[2].Type = SUPLA_CHANNELTYPE_RELAY;
     if (supla_input_cfg[0].type == INPUT_TYPE_BTN_MONOSTABLE) {
-        channels[2].FuncList = SUPLA_BIT_RELAYFUNC_LIGHTSWITCH | SUPLA_BIT_RELAYFUNC_POWERSWITCH;
+        channels[2].FuncList = SUPLA_BIT_FUNC_LIGHTSWITCH | SUPLA_BIT_FUNC_POWERSWITCH;
     } else {
-        channels[2].FuncList = SUPLA_BIT_RELAYFUNC_LIGHTSWITCH | SUPLA_BIT_RELAYFUNC_POWERSWITCH | SUPLA_BIT_RELAYFUNC_CONTROLLINGTHEGATEWAYLOCK | SUPLA_BIT_RELAYFUNC_CONTROLLINGTHEGATE | SUPLA_BIT_RELAYFUNC_CONTROLLINGTHEGARAGEDOOR | SUPLA_BIT_RELAYFUNC_CONTROLLINGTHEDOORLOCK | SUPLA_BIT_RELAYFUNC_STAIRCASETIMER;
+        channels[2].FuncList = SUPLA_BIT_FUNC_LIGHTSWITCH | SUPLA_BIT_FUNC_POWERSWITCH | SUPLA_BIT_FUNC_CONTROLLINGTHEGATEWAYLOCK | SUPLA_BIT_FUNC_CONTROLLINGTHEGATE | SUPLA_BIT_FUNC_CONTROLLINGTHEGARAGEDOOR | SUPLA_BIT_FUNC_CONTROLLINGTHEDOORLOCK | SUPLA_BIT_FUNC_STAIRCASETIMER;
     }
     channels[2].Default = SUPLA_CHANNELFNC_LIGHTSWITCH;
     channels[2].value[0] = supla_esp_gpio_relay_on(B_RELAY1_PORT);
@@ -182,9 +182,9 @@ void ICACHE_FLASH_ATTR supla_esp_board_set_channels(
     channels[3].Number = 3;
     channels[3].Type = SUPLA_CHANNELTYPE_RELAY;
     if (supla_input_cfg[1].type == INPUT_TYPE_BTN_MONOSTABLE) {
-        channels[3].FuncList = SUPLA_BIT_RELAYFUNC_LIGHTSWITCH | SUPLA_BIT_RELAYFUNC_POWERSWITCH;
+        channels[3].FuncList = SUPLA_BIT_FUNC_LIGHTSWITCH | SUPLA_BIT_FUNC_POWERSWITCH;
     } else {
-        channels[3].FuncList = SUPLA_BIT_RELAYFUNC_LIGHTSWITCH | SUPLA_BIT_RELAYFUNC_POWERSWITCH | SUPLA_BIT_RELAYFUNC_CONTROLLINGTHEGATEWAYLOCK | SUPLA_BIT_RELAYFUNC_CONTROLLINGTHEGATE | SUPLA_BIT_RELAYFUNC_CONTROLLINGTHEGARAGEDOOR | SUPLA_BIT_RELAYFUNC_CONTROLLINGTHEDOORLOCK | SUPLA_BIT_RELAYFUNC_STAIRCASETIMER;
+        channels[3].FuncList = SUPLA_BIT_FUNC_LIGHTSWITCH | SUPLA_BIT_FUNC_POWERSWITCH | SUPLA_BIT_FUNC_CONTROLLINGTHEGATEWAYLOCK | SUPLA_BIT_FUNC_CONTROLLINGTHEGATE | SUPLA_BIT_FUNC_CONTROLLINGTHEGARAGEDOOR | SUPLA_BIT_FUNC_CONTROLLINGTHEDOORLOCK | SUPLA_BIT_FUNC_STAIRCASETIMER;
     }
     channels[3].Default = SUPLA_CHANNELFNC_LIGHTSWITCH;
     channels[3].value[0] = supla_esp_gpio_relay_on(B_RELAY2_PORT);
@@ -210,9 +210,9 @@ void ICACHE_FLASH_ATTR supla_esp_board_set_channels(
 
     channels[2].Number = 2;
     channels[2].Type = SUPLA_CHANNELTYPE_RELAY;
-    channels[2].FuncList = SUPLA_BIT_RELAYFUNC_CONTROLLINGTHEROLLERSHUTTER;
+    channels[2].FuncList = SUPLA_BIT_FUNC_CONTROLLINGTHEROLLERSHUTTER;
     channels[2].Default = SUPLA_CHANNELFNC_CONTROLLINGTHEROLLERSHUTTER;
-    channels[2].value[0] = (*supla_rs_cfg[0].position) - 1;
+    channels[2].value[0] = supla_esp_gpio_rs_get_current_position(&supla_rs_cfg[0]);
 
 #endif
 }
@@ -323,14 +323,14 @@ char* ICACHE_FLASH_ATTR supla_esp_board_cfg_html_template(
 #endif
                                   "</div><button type=\"submit\">SAVE</button></form></div><br><br>";
 
-    int bufflen = strlen(supla_esp_devconn_laststate()) + strlen(dev_name) + strlen(SUPLA_ESP_SOFTVER) + strlen(supla_esp_cfg.WIFI_SSID) + strlen(supla_esp_cfg.Server) + strlen(supla_esp_cfg.Email) + strlen(html_template_header) + strlen(html_template) + 200;
+    int bufflen = strlen(supla_esp_get_laststate()) + strlen(dev_name) + strlen(SUPLA_ESP_SOFTVER) + strlen(supla_esp_cfg.WIFI_SSID) + strlen(supla_esp_cfg.Server) + strlen(supla_esp_cfg.Email) + strlen(html_template_header) + strlen(html_template) + 200;
 
     char* buffer = (char*)malloc(bufflen);
 
     ets_snprintf(
         buffer, bufflen, html_template, html_template_header,
         data_saved == 1 ? "<div id=\"msg\" class=\"c\">Data saved</div>" : "",
-        dev_name, supla_esp_devconn_laststate(), SUPLA_ESP_SOFTVER,
+        dev_name, supla_esp_get_laststate(), SUPLA_ESP_SOFTVER,
         (unsigned char)supla_esp_cfg.GUID[0],
         (unsigned char)supla_esp_cfg.GUID[1],
         (unsigned char)supla_esp_cfg.GUID[2],
@@ -373,7 +373,7 @@ void ICACHE_FLASH_ATTR supla_esp_board_gpio_relay_switch(void* _input_cfg,
 
         // supla_log(LOG_DEBUG, "RELAY");
 
-        supla_esp_gpio_relay_hi(input_cfg->relay_gpio_id, hi, 0);
+        supla_esp_gpio_relay_hi(input_cfg->relay_gpio_id, hi);
 
         if (input_cfg->channel != 255)
             supla_esp_channel_value_changed(

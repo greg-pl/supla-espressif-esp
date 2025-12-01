@@ -19,20 +19,17 @@
 #ifndef SUPLA_ESP_H_
 #define SUPLA_ESP_H_
 
-#define MEMLEAK_DEBUG
-
-#include "supla-dev/proto.h"
 #include "board/supla_esp_board.h"
 #include "espmissingincludes.h"
 
-#define SUPLA_ESP_SOFTVER "2.7.16"
+#define SUPLA_ESP_SOFTVER "2.8.62"
 
-#define STATE_UNKNOWN       0
-#define STATE_DISCONNECTED  1
-#define STATE_IPRECEIVED    2
-#define STATE_CONNECTED     4
-#define STATE_CFGMODE       5
-#define STATE_UPDATE        6
+#define STATE_UNKNOWN 0
+#define STATE_DISCONNECTED 1
+#define STATE_IPRECEIVED 2
+#define STATE_CONNECTED 4
+#define STATE_CFGMODE 5
+#define STATE_UPDATE 6
 
 #ifndef ESP8266_SUPLA_PROTO_VERSION
 #define ESP8266_SUPLA_PROTO_VERSION SUPLA_PROTO_VERSION
@@ -42,13 +39,13 @@
 #define STATE_SECTOR_OFFSET 1
 #endif /*STATE_SECTOR_OFFSET*/
 
-#define LO_VALUE  0
-#define HI_VALUE  1
+#define LO_VALUE 0
+#define HI_VALUE 1
 
 #define RELAY_INIT_VALUE LO_VALUE
 
 #ifndef SAVE_STATE_DELAY
-#define SAVE_STATE_DELAY  1000
+#define SAVE_STATE_DELAY 1000
 #endif /*SAVE_STATE_DELAY*/
 
 #ifndef SEND_BUFFER_SIZE
@@ -56,53 +53,115 @@
 #endif /*SEND_BUFFER_SIZE*/
 
 #ifndef CFG_BTN_PRESS_TIME
-#define CFG_BTN_PRESS_TIME      5000
+#define CFG_BTN_PRESS_TIME 5000
 #endif /*CFG_BTN_PRESS_TIME*/
 
-
 #ifndef GET_CFG_PRESS_TIME
-#define GET_CFG_PRESS_TIME supla_esp_gpio_get_cfg_press_time
+#define GET_CFG_PRESS_TIME supla_esp_input_get_cfg_press_time
 #endif /*GET_CFG_PRESS_TIME*/
 
+// minimum button press time after which ON_HOLD action trigger is send
+#ifndef BTN_HOLD_TIME_MS
+#define BTN_HOLD_TIME_MS 700
+#endif /*BTN_HOLD_TIME_MS*/
+
+// maximum delay between button press time to count it as multiclick
+#ifndef BTN_MULTICLICK_TIME_MS
+#define BTN_MULTICLICK_TIME_MS 300
+#endif /*BTN_MULTICLICK_TIME_MS*/
+
 #ifndef INPUT_MAX_COUNT
-#define INPUT_MAX_COUNT         7
+#define INPUT_MAX_COUNT 7
 #endif /*INPUT_MAX_COUNT*/
 
 #ifndef RELAY_MAX_COUNT
-#define RELAY_MAX_COUNT         4
+#define RELAY_MAX_COUNT 4
 #endif /*RELAY_MAX_COUNT*/
 
 #ifndef RS_MAX_COUNT
-#define RS_MAX_COUNT            8
+#define RS_MAX_COUNT 8
 #endif /*RS_MAX_COUNT*/
 
 #ifndef RS_SAVE_STATE_DELAY
-#define RS_SAVE_STATE_DELAY     0
+#define RS_SAVE_STATE_DELAY 0
 #endif /*RS_SAVE_STATE_DELAY*/
 
+#ifndef RS_AUTOCAL_FILTERING_TIME_MS
+// 300 ms of filtering time since RS start movement and we start to check if
+// RS motor is taking current
+#define RS_AUTOCAL_FILTERING_TIME_MS 300
+#endif /*RS_AUTOCAL_FILTERING_TIME_MS*/
+
+#ifndef RS_AUTOCAL_MIN_TIME_MS
+// auto calibration with calculated times below 500 ms will be considered as
+// error
+#define RS_AUTOCAL_MIN_TIME_MS 500
+#endif /*RS_AUTOCAL_MIN_TIME_MS*/
+
+#ifndef RS_AUTOCAL_MAX_TIME_MS
+// auto calibration with calculated time above 9 min 50 s will be considered as
+// error
+#define RS_AUTOCAL_MAX_TIME_MS ((9 * 60 + 50) * 1000)
+#endif /*RS_AUTOCAL_MAX_TIME_MS*/
+
 #ifndef CFG_TIME1_COUNT
-#define CFG_TIME1_COUNT         8
+#define CFG_TIME1_COUNT 8
 #endif /*CFG_TIME1_COUNT*/
 
 #ifndef CFG_TIME2_COUNT
-#define CFG_TIME2_COUNT         8
+#define CFG_TIME2_COUNT 8
 #endif /*CFG_TIME2_COUNT*/
 
+#ifndef CFG_TIME3_COUNT
+#define CFG_TIME3_COUNT 8
+#endif /*CFG_TIME3_COUNT*/
+
+#ifndef STATE_CFG_TIME1_COUNT
+#define STATE_CFG_TIME1_COUNT CFG_TIME1_COUNT
+#endif /*STATE_CFG_TIME1_COUNT*/
+
+#ifndef STATE_CFG_TIME2_COUNT
+#define STATE_CFG_TIME2_COUNT CFG_TIME2_COUNT
+#endif /*STATE_CFG_TIME2_COUNT*/
+
+
 #ifndef SMOOTH_MAX_COUNT
-#define SMOOTH_MAX_COUNT        1
+#define SMOOTH_MAX_COUNT 1
 #endif /*SMOOTH_MAX_COUNT*/
 
-#define INPUT_FLAG_PULLUP             0x01
-#define INPUT_FLAG_CFG_BTN            0x02
-#define INPUT_FLAG_FACTORY_RESET      0x04
-#define INPUT_FLAG_DISABLE_INTR       0x08
+#define INPUT_FLAG_PULLUP 0x01
+#define INPUT_FLAG_CFG_BTN 0x02
+#define INPUT_FLAG_FACTORY_RESET 0x04
+#define INPUT_FLAG_DISABLE_INTR 0x08
+#define INPUT_FLAG_TRIGGER_ON_PRESS 0x10 // used for monostable inputs
 
-#define INPUT_TYPE_SENSOR                1
-#define INPUT_TYPE_BTN_MONOSTABLE        2
-#define INPUT_TYPE_BTN_MONOSTABLE_RS     3
-#define INPUT_TYPE_BTN_BISTABLE          4
-#define INPUT_TYPE_BTN_BISTABLE_RS       5
-#define INPUT_TYPE_CUSTOM                200
+// If none of below flags are set, then by default "on hold" entry to cfg mode
+// is used for monostable button, and 10x toggle for bistable button.
+// In case of monostable input, "on toggle" flag enables 10x press to enter cfg
+// mode and disables default "on hold".
+// If both "on toggle" and "on hold" flags are set for monostable input then 
+// both methods will be enabled for monostable input.
+// Those flags doesn't have any effect on bistable inputs - there is always
+// only "on toggle" variant possible.
+#define INPUT_FLAG_CFG_ON_TOGGLE 0x20
+#define INPUT_FLAG_CFG_ON_HOLD 0x40
+
+#define INPUT_TYPE_SENSOR 1
+#define INPUT_TYPE_BTN_MONOSTABLE 2
+// Standard BISTABLE button toggles relay on each input state change
+#define INPUT_TYPE_BTN_BISTABLE 4
+// Motion sensor turns relay on, when sensor is on, and turns off,
+// when sensor is off (fixed position-state). It ignores stored relay state
+#define INPUT_TYPE_MOTION_SENSOR 8
+#define INPUT_TYPE_CUSTOM 200
+
+#ifndef INPUT_MIN_CYCLE_COUNT
+#define INPUT_MIN_CYCLE_COUNT 5
+#endif /*INPUT_MIN_CYCLE_COUNT*/
+
+#ifndef INPUT_CYCLE_TIME
+#define INPUT_CYCLE_TIME 20
+#endif /*INPUT_CYCLE_TIME*/
 
 // milliseconds
 #ifndef RS_START_DELAY
@@ -132,11 +191,19 @@
 #endif
 
 #ifndef CFG_ICACHE_FLASH_ATTR
-#define CFG_ICACHE_FLASH_ATTR  ICACHE_FLASH_ATTR
+#define CFG_ICACHE_FLASH_ATTR ICACHE_FLASH_ATTR
 #endif
 
 #ifndef DHT_ICACHE_FLASH
 #define DHT_ICACHE_FLASH ICACHE_FLASH_ATTR
+#endif
+
+#ifndef CDT_ICACHE_FLASH_ATTR
+#define CDT_ICACHE_FLASH_ATTR ICACHE_FLASH_ATTR
+#endif
+
+#ifndef DNS_ICACHE_FLASH_ATTR
+#define DNS_ICACHE_FLASH_ATTR ICACHE_FLASH_ATTR
 #endif
 
 #ifndef BTN1_DEFAULT
@@ -147,6 +214,10 @@
 #define BTN2_DEFAULT BTN_TYPE_BISTABLE
 #endif
 
+#ifndef BTN_MAX_COUNT
+#define BTN_MAX_COUNT 4
+#endif
+
 #ifndef MANUFACTURER_ID
 #define MANUFACTURER_ID 0
 #endif
@@ -155,17 +226,71 @@
 #define PRODUCT_ID 0
 #endif
 
+#ifndef DEVICE_FLAGS
+#define DEVICE_FLAGS SUPLA_DEVICE_FLAG_CALCFG_ENTER_CFG_MODE
+#endif
+
+#ifndef MQTT_PREFIX_SIZE
+#define MQTT_PREFIX_SIZE 50
+#endif /*MQTT_PREFIX_SIZE*/
+
+#ifndef MQTT_RECVBUF_SIZE
+#define MQTT_RECVBUF_SIZE 1024
+#endif /*MQTT_RECVBUF_SIZE*/
+
+#ifndef MQTT_SENDBUF_SIZE
+#define MQTT_SENDBUF_SIZE 4096
+#endif /*MQTT_SENDBUF_SIZE*/
+
+#ifndef MQTT_DEVICE_NAME
+#define MQTT_DEVICE_NAME AP_SSID
+#endif /*MQTT_DEVICE_NAME*/
+
+#ifndef MQTT_POOL_PUBLICATION_MAX_DELAY
+#define MQTT_POOL_PUBLICATION_MAX_DELAY 3600
+#endif /*MQTT_POOL_PUBLICATION_MAX_DELAY*/
+
+#ifndef MQTT_BOARD_ACTION_TRIGGER_IDX_OFFSET
+#define MQTT_BOARD_ACTION_TRIGGER_IDX_OFFSET 0
+#endif /*MQTT_BOARD_ACTION_TRIGGER_IDX_OFFSET*/
+
+#ifndef MQTT_BOARD_ACTION_TRIGGER_FIRST_CHANNEL_ID
+#define MQTT_BOARD_ACTION_TRIGGER_FIRST_CHANNEL_ID 0
+#endif /*MQTT_BOARD_ACTION_TRIGGER_FIRST_CHANNEL_ID*/
+
+#define CFG_FLAG_MQTT_ENABLED 0x01
+#define CFG_FLAG_MQTT_NO_RETAIN 0x02
+#define CFG_FLAG_MQTT_TLS 0x04
+#define CFG_FLAG_MQTT_NO_AUTH 0x08
+#define CFG_FLAG_DEVICE_LOCKED 0x10
+
+#ifndef CFG_FLAG_TRIGGER_ON_RELEASE
+#define CFG_FLAG_TRIGGER_ON_RELEASE 0
+#endif /*CFG_FLAG_TRIGGER_ON_RELEASE*/
+
+#ifndef CFG_FLAG_TRIGGER_ON_PRESS
+#define CFG_FLAG_TRIGGER_ON_PRESS 1
+#endif /*CFG_FLAG_TRIGGER_ON_PRESS*/
+
+#ifdef MQTT_HA_ROLLERSHUTTER_SUPPORT
+#ifndef BOARD_ON_ROLLERSHUTTER_POSITION_CHANGED
+#define BOARD_ON_ROLLERSHUTTER_POSITION_CHANGED
+#endif
+#endif
+
 void supla_esp_board_set_device_name(char *buffer, uint8 buffer_size);
 #if ESP8266_SUPLA_PROTO_VERSION >= 10
-void supla_esp_board_set_channels(TDS_SuplaDeviceChannel_C *channels, unsigned char *channel_count);
+void supla_esp_board_set_channels(TDS_SuplaDeviceChannel_C *channels,
+                                  unsigned char *channel_count);
 #else
-void supla_esp_board_set_channels(TDS_SuplaDeviceChannel_B *channels, unsigned char *channel_count);
+void supla_esp_board_set_channels(TDS_SuplaDeviceChannel_B *channels,
+                                  unsigned char *channel_count);
 #endif /*ESP8266_SUPLA_PROTO_VERSION >= 10*/
 void supla_esp_board_relay_before_change_state(void);
 void supla_esp_board_relay_after_change_state(void);
 void supla_esp_board_gpio_init(void);
 void ICACHE_FLASH_ATTR supla_system_restart(void);
-
+void ICACHE_FLASH_ATTR supla_system_restart_with_delay(uint32 delay_ms);
 
 #ifdef __FOTA
 
@@ -178,76 +303,85 @@ void ICACHE_FLASH_ATTR supla_system_restart(void);
 #define RSA_PUBLIC_EXPONENT 65537
 
 extern const uint8_t rsa_public_key_bytes[RSA_NUM_BYTES];
-#endif
+
+#ifndef UPDATE_PARAM3
+#define UPDATE_PARAM3 0
+#endif /*UPDATE_PARAM3*/
+
+#ifndef UPDATE_PARAM4
+#define UPDATE_PARAM4 0
+#endif /*UPDATE_PARAM4*/
+
+#endif /*__FOTA*/
 
 #ifndef INTR_CLEAR_MASK
 #define INTR_CLEAR_MASK 0xFF
 #endif
 
 #ifndef GPIO_PORT_INIT
-#define GPIO_PORT_INIT \
-	PIN_FUNC_SELECT(PERIPHS_IO_MUX_GPIO0_U, FUNC_GPIO0); \
-	PIN_FUNC_SELECT(PERIPHS_IO_MUX_GPIO4_U, FUNC_GPIO4); \
-	PIN_FUNC_SELECT(PERIPHS_IO_MUX_GPIO5_U, FUNC_GPIO5); \
-	PIN_FUNC_SELECT(PERIPHS_IO_MUX_MTDI_U, FUNC_GPIO12); \
-	PIN_FUNC_SELECT(PERIPHS_IO_MUX_MTCK_U, FUNC_GPIO13); \
-	PIN_FUNC_SELECT(PERIPHS_IO_MUX_MTMS_U, FUNC_GPIO14)
+#define GPIO_PORT_INIT                                 \
+  PIN_FUNC_SELECT(PERIPHS_IO_MUX_GPIO0_U, FUNC_GPIO0); \
+  PIN_FUNC_SELECT(PERIPHS_IO_MUX_GPIO4_U, FUNC_GPIO4); \
+  PIN_FUNC_SELECT(PERIPHS_IO_MUX_GPIO5_U, FUNC_GPIO5); \
+  PIN_FUNC_SELECT(PERIPHS_IO_MUX_MTDI_U, FUNC_GPIO12); \
+  PIN_FUNC_SELECT(PERIPHS_IO_MUX_MTCK_U, FUNC_GPIO13); \
+  PIN_FUNC_SELECT(PERIPHS_IO_MUX_MTMS_U, FUNC_GPIO14)
 #endif
 
 // PWM ----------------------------------
 
 #ifndef PWM_0_OUT_IO_MUX
-	#define PWM_0_OUT_IO_MUX PERIPHS_IO_MUX_GPIO4_U
-	#define PWM_0_OUT_IO_NUM 4
-	#define PWM_0_OUT_IO_FUNC  FUNC_GPIO4
+#define PWM_0_OUT_IO_MUX PERIPHS_IO_MUX_GPIO4_U
+#define PWM_0_OUT_IO_NUM 4
+#define PWM_0_OUT_IO_FUNC FUNC_GPIO4
 #endif
 
 #ifndef PWM_1_OUT_IO_MUX
-	#define PWM_1_OUT_IO_MUX PERIPHS_IO_MUX_GPIO5_U
-	#define PWM_1_OUT_IO_NUM 5
-	#define PWM_1_OUT_IO_FUNC  FUNC_GPIO5
+#define PWM_1_OUT_IO_MUX PERIPHS_IO_MUX_GPIO5_U
+#define PWM_1_OUT_IO_NUM 5
+#define PWM_1_OUT_IO_FUNC FUNC_GPIO5
 #endif
 
 #ifndef PWM_2_OUT_IO_MUX
-	#define PWM_2_OUT_IO_MUX PERIPHS_IO_MUX_MTDI_U
-	#define PWM_2_OUT_IO_NUM 12
-	#define PWM_2_OUT_IO_FUNC  FUNC_GPIO12
+#define PWM_2_OUT_IO_MUX PERIPHS_IO_MUX_MTDI_U
+#define PWM_2_OUT_IO_NUM 12
+#define PWM_2_OUT_IO_FUNC FUNC_GPIO12
 #endif
 
 #ifndef PWM_3_OUT_IO_MUX
-	#define PWM_3_OUT_IO_MUX PERIPHS_IO_MUX_MTCK_U
-	#define PWM_3_OUT_IO_NUM 13
-	#define PWM_3_OUT_IO_FUNC  FUNC_GPIO13
+#define PWM_3_OUT_IO_MUX PERIPHS_IO_MUX_MTCK_U
+#define PWM_3_OUT_IO_NUM 13
+#define PWM_3_OUT_IO_FUNC FUNC_GPIO13
 #endif
 
 #ifndef PWM_4_OUT_IO_MUX
-	#define PWM_4_OUT_IO_MUX PERIPHS_IO_MUX_MTMS_U
-	#define PWM_4_OUT_IO_NUM 14
-	#define PWM_4_OUT_IO_FUNC  FUNC_GPIO14
+#define PWM_4_OUT_IO_MUX PERIPHS_IO_MUX_MTMS_U
+#define PWM_4_OUT_IO_NUM 14
+#define PWM_4_OUT_IO_FUNC FUNC_GPIO14
 #endif
 
 #ifndef PWM_PERIOD
-  #define PWM_PERIOD 1000
+#define PWM_PERIOD 1000
 #endif
 
 // --------------------------------------
 
 #ifndef AP_SSID
-	#ifdef ESP8285
-		#define AP_SSID "SUPLA-ESP8285"
-	#else
-		#define AP_SSID "SUPLA-ESP8266"
-	#endif
+#ifdef ESP8285
+#define AP_SSID "SUPLA-ESP8285"
+#else
+#define AP_SSID "SUPLA-ESP8266"
+#endif
 #endif
 
-#define SPI_FLASH_SEC_SIZE  4096
-#define SERVER_MAXSIZE      100
-#define WIFI_SSID_MAXSIZE   32
-#define WIFI_PWD_MAXSIZE    64
+#define SPI_FLASH_SEC_SIZE 4096
+#define SERVER_MAXSIZE 100
+#define WIFI_SSID_MAXSIZE 32
+#define WIFI_PWD_MAXSIZE 64
 
-#define STATE_MAXSIZE       300
+#define STATE_MAXSIZE 300
 
-#define RECVBUFF_MAXSIZE  1024
+#define RECVBUFF_MAXSIZE 1024
 
 #define ACTIVITY_TIMEOUT 10
 
@@ -268,6 +402,10 @@ extern const uint8_t rsa_public_key_bytes[RSA_NUM_BYTES];
 #define WATCHDOG_SOFT_TIMEOUT_SEC 65
 #endif /*WATCHDOG_SOFT_TIMEOUT_SEC*/
 
+#ifndef RECONNECT_DELAY_MSEC
+#define RECONNECT_DELAY_MSEC 2000
+#endif /*RECONNECT_DELAY_MSEC*/
+
 #ifndef RELAY_DOUBLE_TRY
 #define RELAY_DOUBLE_TRY 10000
 #endif
@@ -281,9 +419,30 @@ extern const uint8_t rsa_public_key_bytes[RSA_NUM_BYTES];
 #endif
 
 #ifndef RGBW_CHANNEL_LIMIT
-#define RGBW_CHANNEL_LIMIT if ( ChannelNumber >= 2 ) return;
+#define RGBW_CHANNEL_LIMIT \
+  if (ChannelNumber >= 2) return;
 #endif
 
-extern uint32 heartbeat_timer_sec;
+#ifdef DONT_SAVE_STATE
+#define DEVICE_STATE_INACTIVE
+#endif
+
+#ifndef CHANNEL_CONFIG_LIMIT
+#define CHANNEL_CONFIG_LIMIT 8
+#endif /*CHANNEL_CONFIG_LIMIT*/
+
+unsigned _supla_int64_t MAIN_ICACHE_FLASH uptime_usec(void);
+unsigned _supla_int64_t MAIN_ICACHE_FLASH uptime_msec(void);
+uint32 MAIN_ICACHE_FLASH uptime_sec(void);
+
+#ifdef CFG_TIME_VARIABLES
+#ifndef CFG_TIME_VARIABLES_PRECISION
+#define CFG_TIME_VARIABLES_PRECISION 0
+#endif /*CFG_TIME_VARIABLES_PRECISION*/
+#endif /*CFG_TIME_VARIABLES*/
+
+#ifndef INPUT_SILENT_STARTUP_TIME_MS
+#define INPUT_SILENT_STARTUP_TIME_MS 400
+#endif /*INPUT_SILENT_STARTUP_TIME_MS*/
 
 #endif /* SUPLA_ESP_H_ */

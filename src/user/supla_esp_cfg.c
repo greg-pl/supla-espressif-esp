@@ -52,26 +52,35 @@ supla_esp_cfg_save(SuplaEspCfg *cfg) {
 	return 0;
 }
 
-void CFG_ICACHE_FLASH_ATTR
-_supla_esp_save_state(void *timer_arg) {
-#ifndef DONT_SAVE_STATE
-	ets_intr_lock();
-	spi_flash_erase_sector(CFG_SECTOR+STATE_SECTOR_OFFSET);
+void CFG_ICACHE_FLASH_ATTR _supla_esp_save_state(void *timer_arg) {
+#ifndef DEVICE_STATE_INACTIVE
+#ifdef BOARD_SAVE_STATE
+  if (supla_esp_board_save_state(&supla_esp_state)) {
+    supla_log(LOG_DEBUG, "STATE WRITE SUCCESS");
+    return;
+  }
+  supla_log(LOG_DEBUG, "STATE WRITE FAIL!");
+#else  /*BOARD_SAVE_STATE*/
+  ets_intr_lock();
+  spi_flash_erase_sector(CFG_SECTOR + STATE_SECTOR_OFFSET);
 
-	if ( SPI_FLASH_RESULT_OK == spi_flash_write((CFG_SECTOR+STATE_SECTOR_OFFSET) * SPI_FLASH_SEC_SIZE, (uint32*)&supla_esp_state, sizeof(SuplaEspState)) ) {
-		supla_log(LOG_DEBUG, "STATE WRITE SUCCESS");
-		ets_intr_unlock();
-		return;
-	}
+  if (SPI_FLASH_RESULT_OK ==
+      spi_flash_write((CFG_SECTOR + STATE_SECTOR_OFFSET) * SPI_FLASH_SEC_SIZE,
+        (uint32 *)&supla_esp_state, sizeof(SuplaEspState))) {
+    supla_log(LOG_DEBUG, "STATE WRITE SUCCESS");
+    ets_intr_unlock();
+    return;
+  }
 
-	ets_intr_unlock();
-	supla_log(LOG_DEBUG, "STATE WRITE FAIL!");
-#endif /*DONT_SAVE_STATE*/
+  ets_intr_unlock();
+  supla_log(LOG_DEBUG, "STATE WRITE FAIL!");
+#endif /*BOARD_SAVE_STATE*/
+#endif /*DEVICE_STATE_INACTIVE*/
 }
 
 void CFG_ICACHE_FLASH_ATTR
 supla_esp_save_state(int delay) {
-#ifndef DONT_SAVE_STATE
+#ifndef DEVICE_STATE_INACTIVE
 	os_timer_disarm(&supla_esp_cfg_timer1);
 
 	if ( delay > 0 ) {
@@ -82,53 +91,57 @@ supla_esp_save_state(int delay) {
 	} else {
 		_supla_esp_save_state(NULL);
 	}
-#endif /*DONT_SAVE_STATE*/
+#endif /*DEVICE_STATE_INACTIVE*/
 }
 
 void CFG_ICACHE_FLASH_ATTR factory_defaults(char save) {
 
-	char GUID[SUPLA_GUID_SIZE];
-	char AuthKey[SUPLA_AUTHKEY_SIZE];
-	char TAG[6];
-	char Test;
+  char GUID[SUPLA_GUID_SIZE];
+  char AuthKey[SUPLA_AUTHKEY_SIZE];
+  char TAG[6];
+  char Test;
 
-	memcpy(GUID, supla_esp_cfg.GUID, SUPLA_GUID_SIZE);
-	memcpy(AuthKey, supla_esp_cfg.AuthKey, SUPLA_AUTHKEY_SIZE);
-	memcpy(TAG, supla_esp_cfg.TAG, 6);
-	Test = supla_esp_cfg.Test;
+  memcpy(GUID, supla_esp_cfg.GUID, SUPLA_GUID_SIZE);
+  memcpy(AuthKey, supla_esp_cfg.AuthKey, SUPLA_AUTHKEY_SIZE);
+  memcpy(TAG, supla_esp_cfg.TAG, 6);
+  Test = supla_esp_cfg.Test;
 
-	memset(&supla_esp_cfg, 0, sizeof(SuplaEspCfg));
-	memcpy(supla_esp_cfg.GUID, GUID, SUPLA_GUID_SIZE);
-	memcpy(supla_esp_cfg.AuthKey, AuthKey, SUPLA_AUTHKEY_SIZE);
-	memcpy(supla_esp_cfg.TAG, TAG, 6);
+  memset(&supla_esp_cfg, 0, sizeof(SuplaEspCfg));
+  memcpy(supla_esp_cfg.GUID, GUID, SUPLA_GUID_SIZE);
+  memcpy(supla_esp_cfg.AuthKey, AuthKey, SUPLA_AUTHKEY_SIZE);
+  memcpy(supla_esp_cfg.TAG, TAG, 6);
 
-	supla_esp_cfg.CfgButtonType = BTN_TYPE_MONOSTABLE;
-	supla_esp_cfg.Button1Type = BTN1_DEFAULT;
-	supla_esp_cfg.Button2Type = BTN2_DEFAULT;
+  supla_esp_cfg.CfgButtonType = BTN_TYPE_MONOSTABLE;
+  supla_esp_cfg.Button1Type = BTN1_DEFAULT;
+  supla_esp_cfg.Button2Type = BTN2_DEFAULT;
+  supla_esp_cfg.Flags = 0;
+  supla_esp_cfg.Port = 1883;
+  supla_esp_cfg.MqttTopicPrefix[0] = 0;
+  supla_esp_cfg.MqttQoS = 0;
+  supla_esp_cfg.MqttPoolPublicationDelay = 0;
+  supla_esp_cfg.CleanConfigSignature = CLEAN_CONFIG_SIGNATURE;
 
-	memset(&supla_esp_state, 0, sizeof(SuplaEspState));
-	supla_esp_cfg.Test = Test;
+  memset(&supla_esp_state, 0, sizeof(SuplaEspState));
+  supla_esp_cfg.Test = Test;
 
-	if ( save == 1 ) {
+#ifdef BOARD_ESP_FACTORY_DEFAULTS
+  BOARD_ESP_FACTORY_DEFAULTS
+#endif /*BOARD_ESP_FACTORY_DEFAULTS*/
 
-		supla_esp_cfg_save(&supla_esp_cfg);
-		supla_esp_save_state(0);
-
-	}
-
+  if (save == 1) {
+    supla_esp_cfg_save(&supla_esp_cfg);
+    supla_esp_save_state(0);
+  }
 }
 
 char CFG_ICACHE_FLASH_ATTR supla_esp_cfg_ready_to_connect(void) {
-	
-	if (strnlen(supla_esp_cfg.Server, SERVER_MAXSIZE) == 0
-		|| strnlen(supla_esp_cfg.Email, SUPLA_EMAIL_MAXSIZE) == 0
-		|| strnlen(supla_esp_cfg.WIFI_SSID, WIFI_SSID_MAXSIZE) == 0
-		|| strnlen(supla_esp_cfg.WIFI_PWD, WIFI_PWD_MAXSIZE) == 0) {
-		
-		return 0;
-	}
-	
-	return 1;
+  if (strnlen(supla_esp_cfg.Server, SERVER_MAXSIZE) == 0 ||
+      strnlen(supla_esp_cfg.Email, SUPLA_EMAIL_MAXSIZE) == 0 ||
+      strnlen(supla_esp_cfg.WIFI_SSID, WIFI_SSID_MAXSIZE) == 0 ||
+      strnlen(supla_esp_cfg.WIFI_PWD, WIFI_PWD_MAXSIZE) == 0) {
+    return 0;
+  }
+  return 1;
 }
 
 char CFG_ICACHE_FLASH_ATTR
@@ -146,6 +159,7 @@ supla_esp_cfg_init(void) {
 	memset(GUID, 0, SUPLA_GUID_SIZE);
 
 	memset(&supla_esp_cfg, 0, sizeof(SuplaEspCfg));
+	memset(&supla_esp_state, 0, sizeof(SuplaEspState));
 
 	os_timer_disarm(&supla_esp_cfg_timer1);
 
@@ -265,12 +279,21 @@ supla_esp_cfg_init(void) {
 	   supla_log(LOG_DEBUG, "InputCfgTriggerOff: %i", supla_esp_cfg.InputCfgTriggerOff);
 	   */
 
-		if ( SPI_FLASH_RESULT_OK == spi_flash_read((CFG_SECTOR+STATE_SECTOR_OFFSET) * SPI_FLASH_SEC_SIZE, (uint32*)&supla_esp_state, sizeof(SuplaEspState)) ) {
-			supla_log(LOG_DEBUG, "STATE READ SUCCESS!");
-		} else {
-			supla_log(LOG_DEBUG, "STATE READ FAIL!");
-		}
-
+#ifndef DEVICE_STATE_INACTIVE
+     if
+#ifdef BOARD_LOAD_STATE
+       (supla_esp_board_load_state(&supla_esp_state))
+#else /*BOARD_LOAD_STATE*/
+         (SPI_FLASH_RESULT_OK ==
+          spi_flash_read((CFG_SECTOR + STATE_SECTOR_OFFSET) * SPI_FLASH_SEC_SIZE,
+            (uint32 *)&supla_esp_state, sizeof(SuplaEspState)))
+#endif /*BOARD_LOAD_STATE*/
+         {
+           supla_log(LOG_DEBUG, "STATE READ SUCCESS!");
+         } else {
+           supla_log(LOG_DEBUG, "STATE READ FAIL!");
+         }
+#endif /*DEVICE_STATE_INACTIVE*/
 	   return 1;
    }
 
